@@ -1,0 +1,33 @@
+services:
+  api:
+    build: .
+    command: ["node", "dist/api/index.js"]
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_URL=${DATABASE_URL}
+      - FILES_DIR=/data/files
+    volumes:
+      - mq-files:/data/files
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  worker:
+    build: .
+    command: ["node", "dist/worker/index.js"]
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_URL=${DATABASE_URL}
+      - WORKER_QUEUES=${WORKER_QUEUES:-media,integrations}
+      - FILES_DIR=/data/files
+    volumes:
+      - mq-files:/data/files
+
+volumes:
+  mq-files:

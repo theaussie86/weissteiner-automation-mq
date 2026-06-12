@@ -1,0 +1,32 @@
+{
+  "name": "weissteiner-automation-mq",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev:api": "tsx watch src/api/index.ts",
+    "dev:worker": "tsx watch src/worker/index.ts",
+    "start:api": "node dist/api/index.js",
+    "start:worker": "node dist/worker/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bullmq": "^5.78.0",
+    "fastify": "^5.8.5",
+    "ioredis": "5.10.1",
+    "pg": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  }
+}
