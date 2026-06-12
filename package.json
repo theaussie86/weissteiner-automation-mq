@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "build": "tsc",
-    "dev:api": "tsx watch src/api/index.ts",
-    "dev:worker": "tsx watch src/worker/index.ts",
+    "dev:infra": "docker compose -f docker-compose.dev.yml up -d --wait",
+    "dev:infra:down": "docker compose -f docker-compose.dev.yml down",
+    "dev:api": "node --env-file=.env --import=tsx --watch src/api/index.ts",
+    "dev:worker": "node --env-file=.env --import=tsx --watch src/worker/index.ts",
     "start:api": "node dist/api/index.js",
     "start:worker": "node dist/worker/index.js",
     "test": "vitest run",
