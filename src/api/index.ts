@@ -107,8 +107,8 @@ app.post<{ Body: { name: string; queueScopes: string[] } }>(
 
 const TENANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
-app.post<{ Body: { type: string; payload?: unknown; tenant?: string } }>("/jobs", async (request, reply) => {
-  const { type, payload, tenant } = request.body ?? {};
+app.post<{ Body: { type: string; payload?: unknown; tenant?: string; callbackUrl?: string } }>("/jobs", async (request, reply) => {
+  const { type, payload, tenant, callbackUrl } = request.body ?? {};
   const jobType = type ? getJobType(type) : undefined;
   if (!jobType) {
     return reply.code(400).send({ error: `Unknown job type: ${type}` });
@@ -119,6 +119,9 @@ app.post<{ Body: { type: string; payload?: unknown; tenant?: string } }>("/jobs"
   if (tenant !== undefined && !TENANT_PATTERN.test(tenant)) {
     return reply.code(422).send({ error: "Invalid tenant: lowercase letters, digits, hyphens, max 64 chars" });
   }
+  if (callbackUrl !== undefined && !/^https?:\/\//.test(callbackUrl)) {
+    return reply.code(422).send({ error: "Invalid callbackUrl: must be http(s) URL" });
+  }
   const parsed = jobType.payloadSchema.safeParse(payload ?? {});
   if (!parsed.success) {
     return reply.code(422).send({ error: "Invalid payload", issues: parsed.error.issues });
@@ -127,6 +130,7 @@ app.post<{ Body: { type: string; payload?: unknown; tenant?: string } }>("/jobs"
     payload: parsed.data,
     consumer: request.consumer!.name,
     tenant: tenant ?? null,
+    callbackUrl: callbackUrl ?? null,
   });
   await archiveQueued(db, {
     jobId: job.id!,

@@ -5,6 +5,7 @@ import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { CLEANUP_JOB_NAME } from "../jobs/cleanup.js";
 import { archiveFinished } from "../archive.js";
+import { sendCallback } from "../callback.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 
@@ -37,14 +38,43 @@ const workers = config.WORKER_QUEUES.map(
     ),
 );
 
+function notifyCallback(
+  queue: string,
+  job: { id?: string; name: string; data?: { tenant?: string | null; callbackUrl?: string | null } },
+  outcome: { status: "completed"; result: unknown } | { status: "failed"; error: string },
+): void {
+  const url = job.data?.callbackUrl;
+  if (!url || !job.id) return;
+  void sendCallback(
+    url,
+    {
+      jobId: job.id,
+      queue,
+      type: job.name,
+      status: outcome.status,
+      tenant: job.data?.tenant ?? null,
+      ...(outcome.status === "completed" ? { result: outcome.result } : { error: outcome.error }),
+    },
+    config.URL_SIGNING_SECRET,
+  ).then((r) => {
+    if (!r.ok) {
+      console.error(JSON.stringify({ event: "callback.failed", queue, jobId: job.id, url, status: r.status, error: r.error }));
+    }
+  });
+}
+
 for (const worker of workers) {
   worker.on("completed", (job) => {
     console.log(JSON.stringify({ event: "completed", queue: worker.name, jobId: job.id, type: job.name }));
     void archiveFinished(db, worker.name, job.id!, { status: "completed", result: job.returnvalue });
+    notifyCallback(worker.name, job, { status: "completed", result: job.returnvalue });
   });
   worker.on("failed", (job, err) => {
     console.error(JSON.stringify({ event: "failed", queue: worker.name, jobId: job?.id, type: job?.name, error: err.message }));
-    if (job?.id) void archiveFinished(db, worker.name, job.id, { status: "failed", error: err.message });
+    if (job?.id) {
+      void archiveFinished(db, worker.name, job.id, { status: "failed", error: err.message });
+      notifyCallback(worker.name, job, { status: "failed", error: err.message });
+    }
   });
 }
 
