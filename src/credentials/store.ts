@@ -30,6 +30,7 @@ export async function getCredential(
   now: number = Date.now(),
 ): Promise<Record<string, unknown>> {
   const client = await pool.connect();
+  let committed = false;
   try {
     await client.query("begin");
     const result = await client.query(
@@ -48,6 +49,7 @@ export async function getCredential(
     const refresher = refreshers[row.provider];
     if (expiresAt === null || expiresAt > now + REFRESH_BUFFER_MS || !refresher) {
       await client.query("commit");
+      committed = true;
       return data;
     }
     // Token läuft bald ab — Refresh versuchen
@@ -58,23 +60,24 @@ export async function getCredential(
         [encryptCredential(masterKey, name, refreshed.data), refreshed.expiresAt, "ok", name],
       );
       await client.query("commit");
+      committed = true;
       return refreshed.data;
     } catch (refreshErr) {
       // Refresh fehlgeschlagen → als reauth_required markieren und committen,
-      // dann Fehler weiterwerfen. Der äußere catch darf kein Rollback machen,
-      // weil der Commit hier schon erfolgt ist.
+      // dann Fehler weiterwerfen. Der äußere catch rollback nur wenn noch offen.
       await client.query(
         "update credential set data_encrypted = $1, token_expires_at = $2, status = $3, updated_at = now() where name = $4",
         [row.data_encrypted, row.token_expires_at, "reauth_required", name],
       );
       await client.query("commit");
+      committed = true;
       throw refreshErr;
     }
   } catch (err) {
-    // Rollback nur wenn die TX noch offen ist (d.h. kein Commit wurde vorher
-    // ausgeführt). Ein Rollback nach einem Commit ist ein No-op in Postgres,
-    // aber der Fake-Pool hat keine offene TX mehr — hier einfach ignorieren.
-    await client.query("rollback").catch(() => {});
+    // Rollback nur wenn die TX noch offen ist (committed = false).
+    // Ein Rollback nach einem Commit ist ein No-op in Postgres, aber
+    // redundant und führt zu Warnings.
+    if (!committed) await client.query("rollback").catch(() => {});
     throw err;
   } finally {
     client.release();
