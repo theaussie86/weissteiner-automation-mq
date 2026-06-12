@@ -6,12 +6,35 @@ import { getJobType } from "../jobs/registry.js";
 import { CLEANUP_JOB_NAME } from "../jobs/cleanup.js";
 import { archiveFinished } from "../archive.js";
 import { sendCallback } from "../callback.js";
+import { getCredential, type Refresher } from "../credentials/store.js";
+import { refreshAccessToken } from "../credentials/providers/google.js";
+import type { JobContext } from "../jobs/registry.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 
 const config = loadConfig();
 const connection = createRedis(config.REDIS_URL);
 const db = new pg.Pool({ connectionString: config.DATABASE_URL });
+
+// Credential-Kontext (ADR-0002): Lazy-Refresh läuft zentral hier, nie in Job-Code.
+const refreshers: Record<string, Refresher> = {};
+if (config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET) {
+  const clientId = config.GOOGLE_CLIENT_ID;
+  const clientSecret = config.GOOGLE_CLIENT_SECRET;
+  refreshers.google = async (data) => {
+    const result = await refreshAccessToken({ clientId, clientSecret, refreshToken: data.refreshToken as string });
+    return { data: { ...data, accessToken: result.accessToken }, expiresAt: result.expiresAt };
+  };
+}
+const ctx: JobContext = {
+  db,
+  getCredential: (name) => {
+    if (!config.CREDENTIAL_MASTER_KEY) {
+      return Promise.reject(new Error("Credential store not configured (CREDENTIAL_MASTER_KEY missing)"));
+    }
+    return getCredential(db, config.CREDENTIAL_MASTER_KEY, name, refreshers);
+  },
+};
 
 // Repeatable Cleanup (ADR-0004) — Upsert ist idempotent.
 if (config.WORKER_QUEUES.includes("media")) {
@@ -32,7 +55,7 @@ const workers = config.WORKER_QUEUES.map(
         // job.data = { payload, consumer } — Quelle ist Job-Attribut (ADR-0003).
         // Scheduler-Jobs (Cleanup) haben kein data — leeres Payload.
         const payload = jobType.payloadSchema.parse(job.data?.payload ?? {});
-        return jobType.process(payload);
+        return jobType.process(payload, ctx);
       },
       { connection, concurrency: queueName === "media" ? 1 : 5 },
     ),
