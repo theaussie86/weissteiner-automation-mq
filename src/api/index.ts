@@ -8,6 +8,7 @@ import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { generateApiKey, hashApiKey, hasQueueScope, safeEqual, type Consumer } from "../auth.js";
+import { archiveQueued } from "../archive.js";
 import { createVolumeStorage } from "../storage/index.js";
 import { verifyTempUrl } from "../storage/temp-url.js";
 import "../jobs/ping.js";
@@ -104,14 +105,19 @@ app.post<{ Body: { name: string; queueScopes: string[] } }>(
   },
 );
 
-app.post<{ Body: { type: string; payload?: unknown } }>("/jobs", async (request, reply) => {
-  const { type, payload } = request.body ?? {};
+const TENANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+app.post<{ Body: { type: string; payload?: unknown; tenant?: string } }>("/jobs", async (request, reply) => {
+  const { type, payload, tenant } = request.body ?? {};
   const jobType = type ? getJobType(type) : undefined;
   if (!jobType) {
     return reply.code(400).send({ error: `Unknown job type: ${type}` });
   }
   if (!hasQueueScope(request.consumer!, jobType.queue)) {
     return reply.code(403).send({ error: `No scope for queue: ${jobType.queue}` });
+  }
+  if (tenant !== undefined && !TENANT_PATTERN.test(tenant)) {
+    return reply.code(422).send({ error: "Invalid tenant: lowercase letters, digits, hyphens, max 64 chars" });
   }
   const parsed = jobType.payloadSchema.safeParse(payload ?? {});
   if (!parsed.success) {
@@ -120,8 +126,47 @@ app.post<{ Body: { type: string; payload?: unknown } }>("/jobs", async (request,
   const job = await getQueue(jobType.queue).add(jobType.name, {
     payload: parsed.data,
     consumer: request.consumer!.name,
+    tenant: tenant ?? null,
   });
-  return reply.code(202).send({ jobId: job.id, queue: jobType.queue, type: jobType.name });
+  await archiveQueued(db, {
+    jobId: job.id!,
+    queue: jobType.queue,
+    type: jobType.name,
+    consumer: request.consumer!.name,
+    tenant,
+    payload: parsed.data,
+  });
+  return reply.code(202).send({ jobId: job.id, queue: jobType.queue, type: jobType.name, tenant: tenant ?? null });
+});
+
+// Job-Archiv-Abfrage hinter ADMIN_KEY: Filter nach Mandant, Consumer, Typ, Status (ADR-0007).
+app.get<{
+  Querystring: { tenant?: string; consumer?: string; type?: string; status?: string; limit?: string };
+}>("/admin/jobs", async (request, reply) => {
+  const adminKey = request.headers["x-admin-key"];
+  if (!config.ADMIN_KEY) return reply.code(503).send({ error: "Admin API not configured" });
+  if (typeof adminKey !== "string" || !safeEqual(adminKey, config.ADMIN_KEY)) {
+    return reply.code(401).send({ error: "Invalid admin key" });
+  }
+  const filters: string[] = [];
+  const params: unknown[] = [];
+  for (const field of ["tenant", "consumer", "type", "status"] as const) {
+    const value = request.query[field];
+    if (value) {
+      params.push(value);
+      filters.push(`${field} = $${params.length}`);
+    }
+  }
+  params.push(Math.min(Number(request.query.limit) || 50, 500));
+  const where = filters.length ? `where ${filters.join(" and ")}` : "";
+  const result = await db.query(
+    `select job_id, queue, type, consumer, tenant, status, result, error, created_at, finished_at
+     from job_archive ${where}
+     order by created_at desc
+     limit $${params.length}`,
+    params,
+  );
+  return { jobs: result.rows, count: result.rowCount };
 });
 
 const storage = createVolumeStorage(config.FILES_DIR);

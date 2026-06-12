@@ -1,13 +1,16 @@
 import { Queue, Worker } from "bullmq";
+import pg from "pg";
 import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { CLEANUP_JOB_NAME } from "../jobs/cleanup.js";
+import { archiveFinished } from "../archive.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 
 const config = loadConfig();
 const connection = createRedis(config.REDIS_URL);
+const db = new pg.Pool({ connectionString: config.DATABASE_URL });
 
 // Repeatable Cleanup (ADR-0004) — Upsert ist idempotent.
 if (config.WORKER_QUEUES.includes("media")) {
@@ -37,9 +40,11 @@ const workers = config.WORKER_QUEUES.map(
 for (const worker of workers) {
   worker.on("completed", (job) => {
     console.log(JSON.stringify({ event: "completed", queue: worker.name, jobId: job.id, type: job.name }));
+    void archiveFinished(db, worker.name, job.id!, { status: "completed", result: job.returnvalue });
   });
   worker.on("failed", (job, err) => {
     console.error(JSON.stringify({ event: "failed", queue: worker.name, jobId: job?.id, type: job?.name, error: err.message }));
+    if (job?.id) void archiveFinished(db, worker.name, job.id, { status: "failed", error: err.message });
   });
 }
 

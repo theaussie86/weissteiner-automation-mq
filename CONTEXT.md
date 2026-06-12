@@ -33,6 +33,10 @@ _Avoid_: Workflow (reserviert für n8n-Altbestand)
 Ein externer Dienst (n8n-Instanz, Zapier, eigener Service) mit eigenem API-Key und Queue-Scopes.
 _Avoid_: Client, User, Mandant
 
+**Mandant**:
+Der Kunde, dessen Daten ein Job betrifft (z.B. `wachmacherei`) — optionales Job-Attribut (`tenant`), nie eigene Queue. Filterbar im Job-Archiv.
+_Avoid_: Customer, Kunde (als Fachbegriff), eigene Queue pro Mandant
+
 **Callback**:
 Optionaler Webhook pro Job; Worker POSTet das Ergebnis an die `callbackUrl` des Consumers.
 
