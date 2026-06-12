@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { Queue } from "bullmq";
 import pg from "pg";
 import { runner as runMigrations } from "node-pg-migrate";
@@ -11,6 +12,12 @@ import { generateApiKey, hashApiKey, hasQueueScope, safeEqual, type Consumer } f
 import { archiveQueued } from "../archive.js";
 import { createVolumeStorage } from "../storage/index.js";
 import { verifyTempUrl } from "../storage/temp-url.js";
+import {
+  CREDENTIAL_NAME_PATTERN,
+  deleteCredential,
+  listCredentials,
+  upsertCredential,
+} from "../credentials/store.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 import "../jobs/cleanup.js";
@@ -56,6 +63,20 @@ declare module "fastify" {
   }
 }
 
+// Admin-Guard (App-Secret, CONTEXT.md): true = durchgelassen, sonst ist die Reply schon gesendet.
+function requireAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
+  const adminKey = request.headers["x-admin-key"];
+  if (!config.ADMIN_KEY) {
+    void reply.code(503).send({ error: "Admin API not configured" });
+    return false;
+  }
+  if (typeof adminKey !== "string" || !safeEqual(adminKey, config.ADMIN_KEY)) {
+    void reply.code(401).send({ error: "Invalid admin key" });
+    return false;
+  }
+  return true;
+}
+
 app.addHook("onRequest", async (request, reply) => {
   // /files ist durch HMAC-Signatur geschützt (Temp-URL), nicht durch API-Keys.
   if (request.url === "/health" || request.url.startsWith("/admin/") || request.url.startsWith("/files/")) return;
@@ -80,11 +101,7 @@ app.get("/health", async () => {
 app.post<{ Body: { name: string; queueScopes: string[] } }>(
   "/admin/consumers",
   async (request, reply) => {
-    const adminKey = request.headers["x-admin-key"];
-    if (!config.ADMIN_KEY) return reply.code(503).send({ error: "Admin API not configured" });
-    if (typeof adminKey !== "string" || !safeEqual(adminKey, config.ADMIN_KEY)) {
-      return reply.code(401).send({ error: "Invalid admin key" });
-    }
+    if (!requireAdmin(request, reply)) return;
     const { name, queueScopes } = request.body ?? {};
     if (!name || !Array.isArray(queueScopes) || queueScopes.length === 0) {
       return reply.code(400).send({ error: "name and queueScopes[] required" });
@@ -148,11 +165,7 @@ app.post<{ Body: { type: string; payload?: unknown; tenant?: string; callbackUrl
 app.get<{
   Querystring: { tenant?: string; consumer?: string; type?: string; status?: string; limit?: string };
 }>("/admin/jobs", async (request, reply) => {
-  const adminKey = request.headers["x-admin-key"];
-  if (!config.ADMIN_KEY) return reply.code(503).send({ error: "Admin API not configured" });
-  if (typeof adminKey !== "string" || !safeEqual(adminKey, config.ADMIN_KEY)) {
-    return reply.code(401).send({ error: "Invalid admin key" });
-  }
+  if (!requireAdmin(request, reply)) return;
   const filters: string[] = [];
   const params: unknown[] = [];
   for (const field of ["tenant", "consumer", "type", "status"] as const) {
@@ -172,6 +185,47 @@ app.get<{
     params,
   );
   return { jobs: result.rows, count: result.rowCount };
+});
+
+// Credential Store (ADR-0002): nur apikey wird direkt angelegt, OAuth läuft über Connect-Flow.
+app.post<{ Body: { name: string; provider: string; data: Record<string, unknown> } }>(
+  "/admin/credentials",
+  async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    if (!config.CREDENTIAL_MASTER_KEY) return reply.code(503).send({ error: "Credential store not configured" });
+    const { name, provider, data } = request.body ?? {};
+    if (provider !== "apikey") {
+      return reply.code(422).send({ error: "Only provider 'apikey' can be created directly — use the connect flow" });
+    }
+    if (typeof name !== "string" || !CREDENTIAL_NAME_PATTERN.test(name)) {
+      return reply.code(422).send({ error: "Invalid name: lowercase letters, digits, hyphens, max 64 chars" });
+    }
+    if (typeof data !== "object" || data === null || Array.isArray(data) || Object.keys(data).length === 0) {
+      return reply.code(422).send({ error: "data must be a non-empty object" });
+    }
+    const ok = await upsertCredential(db, config.CREDENTIAL_MASTER_KEY, {
+      name,
+      provider: "apikey",
+      data,
+      tokenExpiresAt: null,
+    });
+    if (!ok) return reply.code(409).send({ error: `Name already used by another provider: ${name}` });
+    // Nie Klartext in der Response (Spec).
+    return reply.code(201).send({ name, provider: "apikey" });
+  },
+);
+
+app.get("/admin/credentials", async (request, reply) => {
+  if (!requireAdmin(request, reply)) return;
+  const credentials = await listCredentials(db);
+  return { credentials, count: credentials.length };
+});
+
+app.delete<{ Params: { name: string } }>("/admin/credentials/:name", async (request, reply) => {
+  if (!requireAdmin(request, reply)) return;
+  const removed = await deleteCredential(db, request.params.name);
+  if (!removed) return reply.code(404).send({ error: "Credential not found" });
+  return reply.code(204).send();
 });
 
 const storage = createVolumeStorage(config.FILES_DIR);
