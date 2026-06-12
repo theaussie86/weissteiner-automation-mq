@@ -1,0 +1,3 @@
+# Queues nach Job-Art, queue-agnostischer Worker per Env-Var
+
+Queues werden nach Job-Art geschnitten (`media`, `integrations`, später `flows`) — nie nach Consumer oder n8n-Instanz; die Quelle ist ein Job-Attribut. Es gibt einen API-Container und zunächst einen Worker-Container; der Worker-Code ist queue-agnostisch, `WORKER_QUEUES` bestimmt die Zuständigkeit. Ein Split in spezialisierte Worker (z.B. `media` mit Concurrency 1-2 sandboxed, `integrations` in-process mit hoher Concurrency) ist damit eine Compose-/Env-Änderung, kein Umbau. Sandboxed Processors nur für `media`-Jobs — Prozess-Isolation lohnt nur bei CPU-schweren FFmpeg-Läufen.
