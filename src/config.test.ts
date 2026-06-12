@@ -22,3 +22,14 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ DATABASE_URL: base.DATABASE_URL })).toThrow(/REDIS_URL/);
   });
 });
+
+describe("ADMIN_KEY", () => {
+  it("treats empty string as unset", () => {
+    const config = loadConfig({ ...base, ADMIN_KEY: "" });
+    expect(config.ADMIN_KEY).toBeUndefined();
+  });
+
+  it("rejects short keys", () => {
+    expect(() => loadConfig({ ...base, ADMIN_KEY: "short" })).toThrow(/ADMIN_KEY/);
+  });
+});
