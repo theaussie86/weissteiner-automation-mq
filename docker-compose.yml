@@ -10,6 +10,8 @@ services:
       - REDIS_URL=${REDIS_URL}
       - DATABASE_URL=${DATABASE_URL}
       - ADMIN_KEY=${ADMIN_KEY}
+      - URL_SIGNING_SECRET=${URL_SIGNING_SECRET}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
       - FILES_DIR=/data/files
     volumes:
       - mq-files:/data/files
@@ -28,6 +30,8 @@ services:
       - REDIS_URL=${REDIS_URL}
       - DATABASE_URL=${DATABASE_URL}
       - WORKER_QUEUES=${WORKER_QUEUES:-media,integrations}
+      - URL_SIGNING_SECRET=${URL_SIGNING_SECRET}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
       - FILES_DIR=/data/files
     volumes:
       - mq-files:/data/files

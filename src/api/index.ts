@@ -8,7 +8,11 @@ import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { generateApiKey, hashApiKey, hasQueueScope, safeEqual, type Consumer } from "../auth.js";
+import { createVolumeStorage } from "../storage/index.js";
+import { verifyTempUrl } from "../storage/temp-url.js";
 import "../jobs/ping.js";
+import "../jobs/media.js";
+import "../jobs/cleanup.js";
 
 const config = loadConfig();
 const redis = createRedis(config.REDIS_URL);
@@ -51,7 +55,8 @@ declare module "fastify" {
 }
 
 app.addHook("onRequest", async (request, reply) => {
-  if (request.url === "/health" || request.url.startsWith("/admin/")) return;
+  // /files ist durch HMAC-Signatur geschützt (Temp-URL), nicht durch API-Keys.
+  if (request.url === "/health" || request.url.startsWith("/admin/") || request.url.startsWith("/files/")) return;
   const auth = request.headers.authorization;
   const key = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
   const consumer = key ? await findConsumerByKey(key) : null;
@@ -118,6 +123,35 @@ app.post<{ Body: { type: string; payload?: unknown } }>("/jobs", async (request,
   });
   return reply.code(202).send({ jobId: job.id, queue: jobType.queue, type: jobType.name });
 });
+
+const storage = createVolumeStorage(config.FILES_DIR);
+const CONTENT_TYPES: Record<string, string> = {
+  mp3: "audio/mpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+};
+
+app.get<{ Params: { key: string }; Querystring: { exp?: string; sig?: string } }>(
+  "/files/:key",
+  async (request, reply) => {
+    if (!config.URL_SIGNING_SECRET) return reply.code(503).send({ error: "File delivery not configured" });
+    const { key } = request.params;
+    const exp = Number(request.query.exp);
+    const sig = request.query.sig ?? "";
+    if (!exp || !sig) return reply.code(400).send({ error: "Missing exp/sig" });
+    const verdict = verifyTempUrl({ secret: config.URL_SIGNING_SECRET, fileKey: key, exp, sig });
+    if (!verdict.valid) {
+      return reply.code(verdict.reason === "expired" ? 410 : 403).send({ error: `Temp URL ${verdict.reason}` });
+    }
+    try {
+      const data = await storage.read(key);
+      const ext = key.split(".").pop() ?? "";
+      return reply.header("content-type", CONTENT_TYPES[ext] ?? "application/octet-stream").send(data);
+    } catch {
+      return reply.code(404).send({ error: "File not found or already cleaned up" });
+    }
+  },
+);
 
 app.get<{ Params: { queue: string; id: string } }>("/jobs/:queue/:id", async (request, reply) => {
   if (!hasQueueScope(request.consumer!, request.params.queue)) {

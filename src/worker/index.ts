@@ -1,11 +1,20 @@
-import { Worker } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
+import { CLEANUP_JOB_NAME } from "../jobs/cleanup.js";
 import "../jobs/ping.js";
+import "../jobs/media.js";
 
 const config = loadConfig();
 const connection = createRedis(config.REDIS_URL);
+
+// Repeatable Cleanup (ADR-0004) — Upsert ist idempotent.
+if (config.WORKER_QUEUES.includes("media")) {
+  const mediaQueue = new Queue("media", { connection });
+  await mediaQueue.upsertJobScheduler(`${CLEANUP_JOB_NAME}-hourly`, { every: 3600_000 }, { name: CLEANUP_JOB_NAME });
+  await mediaQueue.close();
+}
 
 const workers = config.WORKER_QUEUES.map(
   (queueName) =>
@@ -16,8 +25,9 @@ const workers = config.WORKER_QUEUES.map(
         if (!jobType) {
           throw new Error(`No processor registered for job type: ${job.name}`);
         }
-        // job.data = { payload, consumer } — Quelle ist Job-Attribut (ADR-0003)
-        const payload = jobType.payloadSchema.parse(job.data.payload);
+        // job.data = { payload, consumer } — Quelle ist Job-Attribut (ADR-0003).
+        // Scheduler-Jobs (Cleanup) haben kein data — leeres Payload.
+        const payload = jobType.payloadSchema.parse(job.data?.payload ?? {});
         return jobType.process(payload);
       },
       { connection, concurrency: queueName === "media" ? 1 : 5 },

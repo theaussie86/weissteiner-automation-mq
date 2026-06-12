@@ -13,6 +13,9 @@ const envSchema = z.object({
   // App-Secret (CONTEXT.md): schaltet die /admin-Routen frei; ohne Wert sind sie deaktiviert.
   // Compose-Interpolation liefert "" wenn unbesetzt — leer zählt als nicht gesetzt.
   ADMIN_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(16).optional()),
+  // App-Secrets für Temp-URLs: Signatur-Key (API + Worker identisch) und öffentliche Basis-URL.
+  URL_SIGNING_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(16).optional()),
+  PUBLIC_BASE_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
 });
 
 export type Config = z.infer<typeof envSchema>;
