@@ -16,6 +16,19 @@ const envSchema = z.object({
   // App-Secrets für Temp-URLs: Signatur-Key (API + Worker identisch) und öffentliche Basis-URL.
   URL_SIGNING_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(16).optional()),
   PUBLIC_BASE_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
+  // Credential Store (ADR-0002): Master-Key entschlüsselt die credential-Tabelle.
+  // 32 Byte base64; ohne Wert ist der Store deaktiviert (503 auf den Routen).
+  CREDENTIAL_MASTER_KEY: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z
+      .string()
+      .refine((s) => Buffer.from(s, "base64").length === 32, "must be 32 bytes base64")
+      .optional(),
+  ),
+  GOOGLE_CLIENT_ID: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
+  GOOGLE_CLIENT_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
+  SHOPIFY_CLIENT_ID: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
+  SHOPIFY_CLIENT_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
 });
 
 export type Config = z.infer<typeof envSchema>;

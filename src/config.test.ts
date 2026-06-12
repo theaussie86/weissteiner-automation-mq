@@ -33,3 +33,29 @@ describe("ADMIN_KEY", () => {
     expect(() => loadConfig({ ...base, ADMIN_KEY: "short" })).toThrow(/ADMIN_KEY/);
   });
 });
+
+describe("CREDENTIAL_MASTER_KEY", () => {
+  it("accepts 32-byte base64 key", () => {
+    const key = Buffer.alloc(32, 7).toString("base64");
+    const config = loadConfig({ ...base, CREDENTIAL_MASTER_KEY: key });
+    expect(config.CREDENTIAL_MASTER_KEY).toBe(key);
+  });
+
+  it("rejects keys that are not 32 bytes", () => {
+    const short = Buffer.alloc(16, 7).toString("base64");
+    expect(() => loadConfig({ ...base, CREDENTIAL_MASTER_KEY: short })).toThrow(/CREDENTIAL_MASTER_KEY/);
+  });
+
+  it("treats empty string as unset", () => {
+    const config = loadConfig({ ...base, CREDENTIAL_MASTER_KEY: "" });
+    expect(config.CREDENTIAL_MASTER_KEY).toBeUndefined();
+  });
+});
+
+describe("OAuth client config", () => {
+  it("treats empty strings as unset", () => {
+    const config = loadConfig({ ...base, GOOGLE_CLIENT_ID: "", SHOPIFY_CLIENT_SECRET: "" });
+    expect(config.GOOGLE_CLIENT_ID).toBeUndefined();
+    expect(config.SHOPIFY_CLIENT_SECRET).toBeUndefined();
+  });
+});
