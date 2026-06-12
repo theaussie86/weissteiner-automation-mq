@@ -50,6 +50,12 @@ describe("CREDENTIAL_MASTER_KEY", () => {
     const config = loadConfig({ ...base, CREDENTIAL_MASTER_KEY: "" });
     expect(config.CREDENTIAL_MASTER_KEY).toBeUndefined();
   });
+
+  it("rejects non-canonical base64", () => {
+    // 43 Zeichen, dekodiert zu 32 Byte, aber kein kanonisches base64 (Padding fehlt)
+    const key = Buffer.alloc(32, 7).toString("base64").slice(0, 43);
+    expect(() => loadConfig({ ...base, CREDENTIAL_MASTER_KEY: key })).toThrow(/CREDENTIAL_MASTER_KEY/);
+  });
 });
 
 describe("OAuth client config", () => {

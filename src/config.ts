@@ -22,7 +22,10 @@ const envSchema = z.object({
     (v) => (v === "" ? undefined : v),
     z
       .string()
-      .refine((s) => Buffer.from(s, "base64").length === 32, "must be 32 bytes base64")
+      .refine((s) => {
+        const key = Buffer.from(s, "base64");
+        return key.length === 32 && key.toString("base64") === s;
+      }, "must be 32 bytes canonical base64")
       .optional(),
   ),
   GOOGLE_CLIENT_ID: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
