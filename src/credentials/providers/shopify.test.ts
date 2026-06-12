@@ -77,3 +77,20 @@ describe("exchangeCode", () => {
     ).rejects.toThrow(/access_token/);
   });
 });
+
+describe("shop domain guard", () => {
+  it("rejects non-myshopify domains in buildAuthUrl", () => {
+    expect(() =>
+      buildAuthUrl({ clientId: "cid", shop: "attacker.com", scopes: ["a"], redirectUri: "https://x", state: "st" }),
+    ).toThrow(/shop/i);
+  });
+
+  it("rejects malicious shop in exchangeCode before any request", async () => {
+    const fn = (async () => {
+      throw new Error("must not be called");
+    }) as unknown as typeof fetch;
+    await expect(
+      exchangeCode({ shop: "evil.com@demo.myshopify.com", clientId: "cid", clientSecret: "csec", code: "c" }, fn),
+    ).rejects.toThrow(/shop/i);
+  });
+});

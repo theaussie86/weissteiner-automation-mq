@@ -3,6 +3,16 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 // Shopify OAuth (Authorization Code Grant). Tokens laufen nicht ab — kein Refresh.
 // Callback-Parameter sind per HMAC-SHA256 mit dem Client-Secret signiert.
 
+// Defense-in-Depth: shop wird in URLs interpoliert — nie ungeprüft, sonst
+// ginge das client_secret beim Code-Exchange an einen fremden Host.
+export const SHOP_PATTERN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
+
+function assertShopDomain(shop: string): void {
+  if (!SHOP_PATTERN.test(shop)) {
+    throw new Error(`Invalid shop domain: ${shop}`);
+  }
+}
+
 export function buildAuthUrl(opts: {
   clientId: string;
   shop: string;
@@ -10,6 +20,7 @@ export function buildAuthUrl(opts: {
   redirectUri: string;
   state: string;
 }): string {
+  assertShopDomain(opts.shop);
   const url = new URL(`https://${opts.shop}/admin/oauth/authorize`);
   url.searchParams.set("client_id", opts.clientId);
   url.searchParams.set("scope", opts.scopes.join(","));
@@ -35,6 +46,7 @@ export async function exchangeCode(
   opts: { shop: string; clientId: string; clientSecret: string; code: string },
   fetchFn: typeof fetch = fetch,
 ): Promise<{ shop: string; accessToken: string }> {
+  assertShopDomain(opts.shop);
   const response = await fetchFn(`https://${opts.shop}/admin/oauth/access_token`, {
     method: "POST",
     headers: { "content-type": "application/json" },
