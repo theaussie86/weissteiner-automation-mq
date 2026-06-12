@@ -10,6 +10,8 @@ const envSchema = z.object({
     .default("media,integrations")
     .transform((s) => s.split(",").map((q) => q.trim()).filter(Boolean)),
   FILES_DIR: z.string().default("/data/files"),
+  // App-Secret (CONTEXT.md): schaltet die /admin-Routen frei; ohne Wert sind sie deaktiviert.
+  ADMIN_KEY: z.string().min(16).optional(),
 });
 
 export type Config = z.infer<typeof envSchema>;

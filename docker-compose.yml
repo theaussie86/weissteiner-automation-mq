@@ -9,6 +9,7 @@ services:
       - PORT=3000
       - REDIS_URL=${REDIS_URL}
       - DATABASE_URL=${DATABASE_URL}
+      - ADMIN_KEY=${ADMIN_KEY}
       - FILES_DIR=/data/files
     volumes:
       - mq-files:/data/files

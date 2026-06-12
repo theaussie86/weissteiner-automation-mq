@@ -16,7 +16,8 @@ const workers = config.WORKER_QUEUES.map(
         if (!jobType) {
           throw new Error(`No processor registered for job type: ${job.name}`);
         }
-        const payload = jobType.payloadSchema.parse(job.data);
+        // job.data = { payload, consumer } — Quelle ist Job-Attribut (ADR-0003)
+        const payload = jobType.payloadSchema.parse(job.data.payload);
         return jobType.process(payload);
       },
       { connection, concurrency: queueName === "media" ? 1 : 5 },
