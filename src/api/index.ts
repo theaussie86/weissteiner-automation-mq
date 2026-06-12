@@ -18,6 +18,9 @@ import {
   listCredentials,
   upsertCredential,
 } from "../credentials/store.js";
+import { consumeState, createState } from "../credentials/state.js";
+import * as google from "../credentials/providers/google.js";
+import * as shopify from "../credentials/providers/shopify.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 import "../jobs/cleanup.js";
@@ -78,8 +81,14 @@ function requireAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
 }
 
 app.addHook("onRequest", async (request, reply) => {
-  // /files ist durch HMAC-Signatur geschützt (Temp-URL), nicht durch API-Keys.
-  if (request.url === "/health" || request.url.startsWith("/admin/") || request.url.startsWith("/files/")) return;
+  // /files: HMAC-Signatur (Temp-URL). /credentials/callback: OAuth-State (single-use, Redis).
+  if (
+    request.url === "/health" ||
+    request.url.startsWith("/admin/") ||
+    request.url.startsWith("/files/") ||
+    request.url.startsWith("/credentials/callback/")
+  )
+    return;
   const auth = request.headers.authorization;
   const key = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
   const consumer = key ? await findConsumerByKey(key) : null;
@@ -227,6 +236,117 @@ app.delete<{ Params: { name: string } }>("/admin/credentials/:name", async (requ
   if (!removed) return reply.code(404).send({ error: "Credential not found" });
   return reply.code(204).send();
 });
+
+// OAuth-Connect (Spec): Admin startet, bekommt authUrl, klickt Consent selbst durch.
+// State liegt single-use in Redis; der Callback ist öffentlich, aber nur mit State nutzbar.
+function oauthRedirectUri(provider: "google" | "shopify"): string | null {
+  return config.PUBLIC_BASE_URL ? `${config.PUBLIC_BASE_URL}/credentials/callback/${provider}` : null;
+}
+
+app.post<{ Body: { name: string; scopes: string[] } }>(
+  "/admin/credentials/google/connect",
+  async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    const redirectUri = oauthRedirectUri("google");
+    if (!config.CREDENTIAL_MASTER_KEY || !config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET || !redirectUri) {
+      return reply.code(503).send({ error: "Google OAuth not configured" });
+    }
+    const { name, scopes } = request.body ?? {};
+    if (typeof name !== "string" || !CREDENTIAL_NAME_PATTERN.test(name)) {
+      return reply.code(422).send({ error: "Invalid name: lowercase letters, digits, hyphens, max 64 chars" });
+    }
+    if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((s) => typeof s === "string")) {
+      return reply.code(422).send({ error: "scopes[] required" });
+    }
+    const state = await createState(redis, { name, provider: "google", scopes });
+    const authUrl = google.buildAuthUrl({ clientId: config.GOOGLE_CLIENT_ID, redirectUri, scopes, state });
+    return { authUrl };
+  },
+);
+
+app.post<{ Body: { name: string; shop: string; scopes: string[] } }>(
+  "/admin/credentials/shopify/connect",
+  async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    const redirectUri = oauthRedirectUri("shopify");
+    if (!config.CREDENTIAL_MASTER_KEY || !config.SHOPIFY_CLIENT_ID || !config.SHOPIFY_CLIENT_SECRET || !redirectUri) {
+      return reply.code(503).send({ error: "Shopify OAuth not configured" });
+    }
+    const { name, shop, scopes } = request.body ?? {};
+    if (typeof name !== "string" || !CREDENTIAL_NAME_PATTERN.test(name)) {
+      return reply.code(422).send({ error: "Invalid name: lowercase letters, digits, hyphens, max 64 chars" });
+    }
+    if (typeof shop !== "string" || !shopify.SHOP_PATTERN.test(shop)) {
+      return reply.code(422).send({ error: "Invalid shop: expected <shop>.myshopify.com" });
+    }
+    if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((s) => typeof s === "string")) {
+      return reply.code(422).send({ error: "scopes[] required" });
+    }
+    const state = await createState(redis, { name, provider: "shopify", shop });
+    const authUrl = shopify.buildAuthUrl({ clientId: config.SHOPIFY_CLIENT_ID, shop, scopes, redirectUri, state });
+    return { authUrl };
+  },
+);
+
+app.get<{ Querystring: { code?: string; state?: string } }>(
+  "/credentials/callback/google",
+  async (request, reply) => {
+    const redirectUri = oauthRedirectUri("google");
+    if (!config.CREDENTIAL_MASTER_KEY || !config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET || !redirectUri) {
+      return reply.code(503).send({ error: "Google OAuth not configured" });
+    }
+    const { code, state } = request.query;
+    const payload = state ? await consumeState(redis, state) : null;
+    if (!code || !payload || payload.provider !== "google") {
+      return reply.code(403).send({ error: "Invalid or expired state" });
+    }
+    const tokens = await google.exchangeCode({
+      clientId: config.GOOGLE_CLIENT_ID,
+      clientSecret: config.GOOGLE_CLIENT_SECRET,
+      redirectUri,
+      code,
+    });
+    const ok = await upsertCredential(db, config.CREDENTIAL_MASTER_KEY, {
+      name: payload.name,
+      provider: "google",
+      data: { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, scopes: tokens.scopes },
+      tokenExpiresAt: tokens.expiresAt,
+    });
+    if (!ok) return reply.code(409).send({ error: `Name already used by another provider: ${payload.name}` });
+    return reply.type("text/plain").send(`Credential '${payload.name}' (google) verbunden. Fenster kann geschlossen werden.`);
+  },
+);
+
+app.get<{ Querystring: Record<string, string | undefined> }>(
+  "/credentials/callback/shopify",
+  async (request, reply) => {
+    if (!config.CREDENTIAL_MASTER_KEY || !config.SHOPIFY_CLIENT_ID || !config.SHOPIFY_CLIENT_SECRET) {
+      return reply.code(503).send({ error: "Shopify OAuth not configured" });
+    }
+    const { code, state, shop } = request.query;
+    if (!shopify.verifyCallbackHmac(request.query, config.SHOPIFY_CLIENT_SECRET)) {
+      return reply.code(403).send({ error: "Invalid HMAC" });
+    }
+    const payload = state ? await consumeState(redis, state) : null;
+    if (!code || !payload || payload.provider !== "shopify" || payload.shop !== shop) {
+      return reply.code(403).send({ error: "Invalid or expired state" });
+    }
+    const tokens = await shopify.exchangeCode({
+      shop: payload.shop!,
+      clientId: config.SHOPIFY_CLIENT_ID,
+      clientSecret: config.SHOPIFY_CLIENT_SECRET,
+      code,
+    });
+    const ok = await upsertCredential(db, config.CREDENTIAL_MASTER_KEY, {
+      name: payload.name,
+      provider: "shopify",
+      data: { shop: tokens.shop, accessToken: tokens.accessToken },
+      tokenExpiresAt: null,
+    });
+    if (!ok) return reply.code(409).send({ error: `Name already used by another provider: ${payload.name}` });
+    return reply.type("text/plain").send(`Credential '${payload.name}' (shopify) verbunden. Fenster kann geschlossen werden.`);
+  },
+);
 
 const storage = createVolumeStorage(config.FILES_DIR);
 const CONTENT_TYPES: Record<string, string> = {
