@@ -51,7 +51,7 @@ Admin-Routen (hinter `x-admin-key`, bestehendes Muster in `src/api/index.ts`):
 - `GET /admin/credentials` — Liste: `name, provider, status, token_expires_at`. Keine Secrets.
 - `DELETE /admin/credentials/:name` — hartes Löschen (kein Soft-Delete v1).
 - `POST /admin/credentials/google/connect` — `{name, scopes[]}` → `{authUrl}`. Auth-URL mit `access_type=offline&prompt=consent` (erzwingt Refresh-Token).
-- `POST /admin/credentials/shopify/connect` — `{name, shop}` → `{authUrl}`.
+- `POST /admin/credentials/shopify/connect` — `{name, shop, scopes[]}` → `{authUrl}`. (Shopify verlangt `scope` in der Authorize-URL.)
 
 Callback-Routen (öffentlich, durch State geschützt; Auth-Hook bekommt `/credentials/callback/` als Skip wie `/files/`):
 
