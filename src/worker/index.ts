@@ -4,6 +4,7 @@ import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { CLEANUP_JOB_NAME } from "../jobs/cleanup.js";
+import { CREDENTIALS_REFRESH_JOB_NAME } from "../jobs/credentials-refresh.js";
 import { archiveFinished } from "../archive.js";
 import { sendCallback } from "../callback.js";
 import { getCredential, type Refresher } from "../credentials/store.js";
@@ -41,6 +42,17 @@ if (config.WORKER_QUEUES.includes("media")) {
   const mediaQueue = new Queue("media", { connection });
   await mediaQueue.upsertJobScheduler(`${CLEANUP_JOB_NAME}-hourly`, { every: 3600_000 }, { name: CLEANUP_JOB_NAME });
   await mediaQueue.close();
+}
+
+// Repeatable Background-Refresh (Spec) — nur sinnvoll wenn der Store konfiguriert ist.
+if (config.WORKER_QUEUES.includes("integrations") && config.CREDENTIAL_MASTER_KEY) {
+  const integrationsQueue = new Queue("integrations", { connection });
+  await integrationsQueue.upsertJobScheduler(
+    `${CREDENTIALS_REFRESH_JOB_NAME}-30min`,
+    { every: 1_800_000 },
+    { name: CREDENTIALS_REFRESH_JOB_NAME },
+  );
+  await integrationsQueue.close();
 }
 
 const workers = config.WORKER_QUEUES.map(

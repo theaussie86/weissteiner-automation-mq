@@ -14,6 +14,7 @@ import { verifyTempUrl } from "../storage/temp-url.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 import "../jobs/cleanup.js";
+import "../jobs/credentials-refresh.js";
 
 const config = loadConfig();
 const redis = createRedis(config.REDIS_URL);
