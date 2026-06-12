@@ -12,12 +12,16 @@
     "dev:infra:down": "docker compose -f docker-compose.dev.yml down",
     "dev:api": "node --env-file=.env --import=tsx --watch src/api/index.ts",
     "dev:worker": "node --env-file=.env --import=tsx --watch src/worker/index.ts",
+    "dev:board": "PORT=5002 node --env-file=.env --import=tsx --watch src/board/index.ts",
     "start:api": "node dist/api/index.js",
     "start:worker": "node dist/worker/index.js",
+    "start:board": "node dist/board/index.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@bull-board/api": "^8.0.0",
+    "@bull-board/fastify": "^8.0.0",
     "bullmq": "^5.78.0",
     "fastify": "^5.8.5",
     "ioredis": "5.10.1",

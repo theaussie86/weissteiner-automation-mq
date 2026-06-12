@@ -32,5 +32,18 @@ services:
     volumes:
       - mq-files:/data/files
 
+  board:
+    build: .
+    command: ["node", "dist/board/index.js"]
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - REDIS_URL=${REDIS_URL}
+      - DATABASE_URL=${DATABASE_URL}
+    # Nur loopback auf dem Host — Zugriff ausschließlich via SSH-Tunnel,
+    # z.B.: ssh -L 5100:localhost:5100 cwe-hostinger
+    ports:
+      - "127.0.0.1:5100:3000"
+
 volumes:
   mq-files:
