@@ -33,11 +33,29 @@ async function postToken(body: URLSearchParams, fetchFn: typeof fetch): Promise<
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
-  const json = (await response.json()) as Record<string, unknown>;
-  if (!response.ok) {
-    throw new Error(`Google token endpoint ${response.status}: ${json.error ?? "unknown"}`);
+  // Infra-Fehler (Proxy, Rate-Limit) liefern HTML statt JSON — Status muss sichtbar bleiben.
+  const text = await response.text();
+  let json: Record<string, unknown> | null = null;
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    json = null;
+  }
+  if (!response.ok || json === null) {
+    const detail = json?.error ?? text.slice(0, 200);
+    throw new Error(`Google token endpoint ${response.status}: ${detail}`);
   }
   return json;
+}
+
+function requireTokenFields(json: Record<string, unknown>, fields: string[]): void {
+  for (const field of fields) {
+    const expectNumber = field === "expires_in";
+    const value = json[field];
+    if (expectNumber ? typeof value !== "number" : typeof value !== "string") {
+      throw new Error(`Google token response missing field: ${field}`);
+    }
+  }
 }
 
 export async function exchangeCode(
@@ -55,6 +73,7 @@ export async function exchangeCode(
     }),
     fetchFn,
   );
+  requireTokenFields(json, ["access_token", "refresh_token", "expires_in"]);
   return {
     accessToken: json.access_token as string,
     refreshToken: json.refresh_token as string,
@@ -77,6 +96,7 @@ export async function refreshAccessToken(
     }),
     fetchFn,
   );
+  requireTokenFields(json, ["access_token", "expires_in"]);
   return {
     accessToken: json.access_token as string,
     expiresAt: new Date(now + (json.expires_in as number) * 1000),

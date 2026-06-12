@@ -72,3 +72,26 @@ describe("refreshAccessToken", () => {
     );
   });
 });
+
+describe("robustness", () => {
+  it("surfaces http status on non-JSON error body", async () => {
+    const calls: unknown[] = [];
+    const fn = (async () => {
+      calls.push(1);
+      return new Response("<html>Bad Gateway</html>", { status: 502 });
+    }) as unknown as typeof fetch;
+    await expect(exchangeCode({ ...client, code: "c" }, fn)).rejects.toThrow(/502/);
+  });
+
+  it("throws on 200 response with missing access_token", async () => {
+    const { fn } = fakeFetch(200, { refresh_token: "rt", expires_in: 3600 });
+    await expect(exchangeCode({ ...client, code: "c" }, fn)).rejects.toThrow(/access_token/);
+  });
+
+  it("throws on refresh response with missing expires_in", async () => {
+    const { fn } = fakeFetch(200, { access_token: "at" });
+    await expect(
+      refreshAccessToken({ clientId: "cid", clientSecret: "csec", refreshToken: "rt" }, fn),
+    ).rejects.toThrow(/expires_in/);
+  });
+});
