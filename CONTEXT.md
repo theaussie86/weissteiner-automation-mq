@@ -1,6 +1,6 @@
 # Weissteiner Automation MQ
 
-Zentrale Job-Plattform auf BullMQ-Basis, die rechenintensive Aufgaben (FFmpeg) und Drittdienst-Integrationen (Google, Shopify, Supabase) ausführt und mittelfristig die bestehenden n8n-Instanzen ablöst.
+Zentrale Job-Plattform auf BullMQ-Basis, die rechenintensive Aufgaben (FFmpeg) und Drittdienst-Integrationen (Google, Shopify, Supabase) ausführt und mittelfristig die bestehenden n8n-Instanzen ablöst. Die Plattform läuft unter `mq.weissteiner-automation.com` (Legacy-Dienst: `util.weissteiner-automation.com`).
 
 ## Language
 
