@@ -17,6 +17,8 @@ exports.up = (pgm) => {
   pgm.addConstraint("credential", "credential_status_check", {
     check: "status in ('ok', 'reauth_required')",
   });
+  // Background-Refresh scannt ablaufende OAuth-Tokens — partieller Index reicht.
+  pgm.createIndex("credential", "token_expires_at", { where: "token_expires_at IS NOT NULL" });
 };
 
 exports.down = (pgm) => {
