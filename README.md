@@ -75,6 +75,28 @@ npm test              # Vitest
 
 ## Deploy & Betrieb
 
+### Credential Store (ADR-0002)
+
+Verschlüsselte Drittdienst-Zugänge in Postgres, referenziert per Name-Slug im Job-Payload.
+
+| Env | Zweck |
+|---|---|
+| `CREDENTIAL_MASTER_KEY` | 32 Byte base64 (`openssl rand -base64 32`); ohne Wert ist der Store deaktiviert |
+| `GOOGLE_CLIENT_ID/SECRET` | Google-OAuth-App (Redirect-URI: `<PUBLIC_BASE_URL>/credentials/callback/google`) |
+| `SHOPIFY_CLIENT_ID/SECRET` | Shopify-App (Redirect-URI: `<PUBLIC_BASE_URL>/credentials/callback/shopify`) |
+
+Endpoints (Admin: `x-admin-key`):
+
+- `POST /admin/credentials` - apikey-Credential anlegen (`{name, provider: "apikey", data}`)
+- `GET /admin/credentials` - Liste ohne Secrets
+- `DELETE /admin/credentials/:name`
+- `POST /admin/credentials/google/connect` (`{name, scopes[]}`) bzw. `.../shopify/connect` (`{name, shop, scopes[]}`) - liefert `authUrl`, Consent im Browser durchklicken
+- `GET /credentials/callback/<provider>` - öffentlich, durch single-use State geschützt
+
+OAuth-Tokens werden lazy beim Lesen refresht (Row-Lock) plus alle 30 min proaktiv
+(`credentials.refresh`, Horizont 45 min). Schlägt ein Refresh fehl, steht das Credential
+auf `reauth_required` - Connect-Flow erneut durchlaufen.
+
 - Push auf `main` → GitHub Actions (Typecheck, Tests, Docker-Build) → Coolify-Webhook deployt automatisch. Branch Protection verlangt grüne Checks.
 - Coolify-Projekt „Weissteiner Automation BullMQ": `mq-postgres`, `mq-redis` (managed, ADR-0005), `mq-app` (Compose: api/worker/board).
 - App-Secrets (`ADMIN_KEY`, `URL_SIGNING_SECRET`, `PUBLIC_BASE_URL`, DB-URLs) liegen in den Coolify-Env-Vars; lokal gespiegelt in der macOS-Keychain (`security find-generic-password -s mq-prod-admin-key -w`, analog `mq-prod-api-key-cwe-internal`, `mq-url-signing-secret`, `mq-coolify-api-token`).
