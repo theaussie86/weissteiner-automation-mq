@@ -1,6 +1,6 @@
 import type pg from "pg";
 
-// Schedule-Store (ADR-0008): die schedule-Tabelle ist Source of Truth fuer alle
+// Schedule-Store (ADR-0008): die schedule-Tabelle ist Source of Truth für alle
 // cron-gesteuerten Jobs. Der BullMQ-Scheduler wird daraus abgeleitet (siehe sync.ts).
 export const SCHEDULE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 

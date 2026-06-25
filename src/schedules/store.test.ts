@@ -80,7 +80,7 @@ describe("schedule store", () => {
     expect(SCHEDULE_NAME_PATTERN.test("Pinfinity Ping")).toBe(false);
   });
 
-  it("legt einen schedule an und gibt den record zurueck", async () => {
+  it("legt einen schedule an und gibt den record zurück", async () => {
     const db = fakePool();
     const record = await createSchedule(db, input);
     expect(record).not.toBeNull();
@@ -90,7 +90,7 @@ describe("schedule store", () => {
     expect(record!.active).toBe(true);
   });
 
-  it("gibt null bei doppeltem namen zurueck", async () => {
+  it("gibt null bei doppeltem namen zurück", async () => {
     const db = fakePool();
     await createSchedule(db, input);
     const dupe = await createSchedule(db, input);
@@ -113,7 +113,7 @@ describe("schedule store", () => {
     expect(await getSchedule(db, "fehlt")).toBeNull();
   });
 
-  it("loescht nach namen und meldet treffer", async () => {
+  it("löscht nach namen und meldet treffer", async () => {
     const db = fakePool();
     await createSchedule(db, input);
     expect(await deleteSchedule(db, "pinfinity-ping")).toBe(true);
