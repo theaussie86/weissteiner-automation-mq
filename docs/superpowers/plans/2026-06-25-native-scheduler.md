@@ -199,7 +199,7 @@ describe("schedule store", () => {
 });
 ```
 
-- [ ] **Step 3: Test laufen lassen, Fehlschlag bestaetigen**
+- [ ] **Step 3: Test laufen lassen, Fehlschlag bestätigen**
 
 Run: `npx vitest run src/schedules/store.test.ts`
 Expected: FAIL — Modul `./store.js` existiert nicht / Funktionen undefined.
@@ -294,7 +294,7 @@ export async function deleteSchedule(db: pg.Pool, name: string): Promise<boolean
 }
 ```
 
-- [ ] **Step 5: Test laufen lassen, Erfolg bestaetigen**
+- [ ] **Step 5: Test laufen lassen, Erfolg bestätigen**
 
 Run: `npx vitest run src/schedules/store.test.ts`
 Expected: PASS (6 Tests grün).
@@ -342,7 +342,7 @@ describe("schedule validation", () => {
     expect(isCronShape("30 0 9 * * *")).toBe(true);
   });
 
-  it("lehnt leere oder zu kurze cron-ausdruecke ab", () => {
+  it("lehnt leere oder zu kurze cron-ausdrücke ab", () => {
     expect(isCronShape("")).toBe(false);
     expect(isCronShape("* * *")).toBe(false);
     expect(isCronShape("   ")).toBe(false);
@@ -360,7 +360,7 @@ describe("schedule validation", () => {
 });
 ```
 
-- [ ] **Step 2: Test laufen lassen, Fehlschlag bestaetigen**
+- [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
 Run: `npx vitest run src/schedules/validate.test.ts`
 Expected: FAIL — `./validate.js` existiert nicht.
@@ -389,7 +389,7 @@ export function isValidTimezone(tz: string): boolean {
 }
 ```
 
-- [ ] **Step 4: Test laufen lassen, Erfolg bestaetigen**
+- [ ] **Step 4: Test laufen lassen, Erfolg bestätigen**
 
 Run: `npx vitest run src/schedules/validate.test.ts`
 Expected: PASS (4 Tests grün).
@@ -462,7 +462,7 @@ describe("scheduler sync", () => {
 });
 ```
 
-- [ ] **Step 2: Test laufen lassen, Fehlschlag bestaetigen**
+- [ ] **Step 2: Test laufen lassen, Fehlschlag bestätigen**
 
 Run: `npx vitest run src/schedules/sync.test.ts`
 Expected: FAIL — `./sync.js` existiert nicht.
@@ -494,7 +494,7 @@ export async function removeScheduler(queue: SchedulerQueue, name: string): Prom
 }
 ```
 
-- [ ] **Step 4: Test laufen lassen, Erfolg bestaetigen**
+- [ ] **Step 4: Test laufen lassen, Erfolg bestätigen**
 
 Run: `npx vitest run src/schedules/sync.test.ts`
 Expected: PASS (2 Tests grün).

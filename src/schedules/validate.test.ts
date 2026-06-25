@@ -8,7 +8,7 @@ describe("schedule validation", () => {
     expect(isCronShape("30 0 9 * * *")).toBe(true);
   });
 
-  it("lehnt leere oder zu kurze cron-ausdruecke ab", () => {
+  it("lehnt leere oder zu kurze cron-ausdrücke ab", () => {
     expect(isCronShape("")).toBe(false);
     expect(isCronShape("* * *")).toBe(false);
     expect(isCronShape("   ")).toBe(false);
