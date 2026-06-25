@@ -116,18 +116,78 @@ export async function getCredential(
 export async function upsertCredential(
   pool: CredentialPool,
   masterKey: string,
-  opts: { name: string; provider: Provider; data: Record<string, unknown>; tokenExpiresAt: Date | null },
+  opts: { name: string; provider: Provider; data: Record<string, unknown>; tokenExpiresAt: Date | null; parentCredentialId?: string | null },
 ): Promise<boolean> {
   const result = await pool.query(
-    `insert into credential (name, provider, data_encrypted, token_expires_at, status)
-     values ($1, $2, $3, $4, 'ok')
+    `insert into credential (name, provider, data_encrypted, token_expires_at, status, parent_credential_id)
+     values ($1, $2, $3, $4, 'ok', $5)
      on conflict (name) do update
        set data_encrypted = excluded.data_encrypted,
            token_expires_at = excluded.token_expires_at,
            status = 'ok',
+           parent_credential_id = excluded.parent_credential_id,
            updated_at = now()
        where credential.provider = excluded.provider`,
-    [opts.name, opts.provider, encryptCredential(masterKey, opts.name, opts.data), opts.tokenExpiresAt],
+    [opts.name, opts.provider, encryptCredential(masterKey, opts.name, opts.data), opts.tokenExpiresAt, opts.parentCredentialId ?? null],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export const APP_PROVIDERS = ["google", "shopify"] as const;
+export type AppProvider = (typeof APP_PROVIDERS)[number];
+
+export interface OAuthApp {
+  id: string;
+  provider: AppProvider;
+  clientId: string;
+  clientSecret: string;
+}
+
+export async function upsertOAuthApp(
+  pool: CredentialPool,
+  masterKey: string,
+  opts: { name: string; provider: AppProvider; clientId: string; clientSecret: string },
+): Promise<boolean> {
+  const storedProvider = `${opts.provider}-app`;
+  const data = { client_id: opts.clientId, client_secret: opts.clientSecret };
+  const result = await pool.query(
+    `insert into credential (name, provider, data_encrypted, status)
+     values ($1, $2, $3, 'ok')
+     on conflict (name) do update
+       set data_encrypted = excluded.data_encrypted, updated_at = now()
+       where credential.provider = excluded.provider`,
+    [opts.name, storedProvider, encryptCredential(masterKey, opts.name, data)],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function getOAuthApp(pool: CredentialPool, masterKey: string, name: string): Promise<OAuthApp> {
+  const result = await pool.query("select id, provider, data_encrypted from credential where name = $1", [name]);
+  const row = result.rows[0] as { id: string; provider: string; data_encrypted: Buffer } | undefined;
+  if (!row) throw new Error(`OAuth app not found: ${name}`);
+  if (row.provider !== "google-app" && row.provider !== "shopify-app") {
+    throw new Error(`Credential is not an OAuth app: ${name} (${row.provider})`);
+  }
+  const data = decryptCredential(masterKey, name, row.data_encrypted);
+  return {
+    id: row.id,
+    provider: row.provider === "google-app" ? "google" : "shopify",
+    clientId: data.client_id as string,
+    clientSecret: data.client_secret as string,
+  };
+}
+
+export async function listOAuthApps(pool: CredentialPool): Promise<{ name: string; provider: string }[]> {
+  const result = await pool.query(
+    "select name, provider from credential where provider in ('google-app','shopify-app') order by name",
+  );
+  return result.rows;
+}
+
+export async function deleteOAuthApp(pool: CredentialPool, name: string): Promise<boolean> {
+  const result = await pool.query(
+    "delete from credential where name = $1 and provider in ('google-app','shopify-app')",
+    [name],
   );
   return (result.rowCount ?? 0) > 0;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { encryptCredential } from "./crypto.js";
-import { getCredential, type AppCreds, type CredentialPool, type Refresher } from "./store.js";
+import { decryptCredential, encryptCredential } from "./crypto.js";
+import { deleteOAuthApp, getOAuthApp, listOAuthApps, upsertOAuthApp, getCredential, type AppCreds, type CredentialPool, type Refresher } from "./store.js";
 
 const masterKey = Buffer.alloc(32, 7).toString("base64");
 const NOW = 1_750_000_000_000;
@@ -154,5 +154,51 @@ describe("getCredential", () => {
     const refreshers3: Record<string, Refresher> = { google: async (d, _a) => ({ data: d, expiresAt: new Date(NOW) }) };
     await expect(getCredential(pool, masterKey, "google-wm", refreshers3, NOW)).rejects.toThrow(/reauth/i);
     expect(tokenRow.status).toBe("reauth_required");
+  });
+});
+
+// Fake-Pool für pool.query (ohne connect) — hält eine Row-Liste in-memory.
+function fakeQueryPool(rows: any[] = []) {
+  const calls: { sql: string; params?: unknown[] }[] = [];
+  const pool = {
+    query: async (sql: string, params?: unknown[]) => {
+      calls.push({ sql, params });
+      if (/^insert/i.test(sql)) return { rows: [], rowCount: 1 };
+      if (/^delete/i.test(sql)) return { rows: [], rowCount: rows.length };
+      if (/^select/i.test(sql)) return { rows, rowCount: rows.length };
+      return { rows: [], rowCount: 0 };
+    },
+  } as unknown as CredentialPool;
+  return { pool, calls };
+}
+
+describe("oauth app store", () => {
+  it("upsertOAuthApp encrypts client secret under -app provider", async () => {
+    const { pool, calls } = fakeQueryPool();
+    await upsertOAuthApp(pool, masterKey, { name: "wa-main", provider: "google", clientId: "cid", clientSecret: "csec" });
+    const insert = calls.find((c) => /^insert/i.test(c.sql))!;
+    expect(insert.params![1]).toBe("google-app");
+    const blob = insert.params![2] as Buffer;
+    expect(decryptCredential(masterKey, "wa-main", blob)).toEqual({ client_id: "cid", client_secret: "csec" });
+  });
+
+  it("getOAuthApp decrypts and returns id + base provider", async () => {
+    const blob = encryptCredential(masterKey, "wa-main", { client_id: "cid", client_secret: "csec" });
+    const { pool } = fakeQueryPool([{ id: "u1", provider: "google-app", data_encrypted: blob }]);
+    const app = await getOAuthApp(pool, masterKey, "wa-main");
+    expect(app).toEqual({ id: "u1", provider: "google", clientId: "cid", clientSecret: "csec" });
+  });
+
+  it("getOAuthApp rejects a non-app credential", async () => {
+    const { pool } = fakeQueryPool([{ id: "u1", provider: "google", data_encrypted: Buffer.alloc(0) }]);
+    await expect(getOAuthApp(pool, masterKey, "wa-main")).rejects.toThrow(/not an OAuth app/i);
+  });
+
+  it("listOAuthApps selects only app providers without secrets", async () => {
+    const { pool, calls } = fakeQueryPool([{ name: "wa-main", provider: "google-app" }]);
+    const list = await listOAuthApps(pool);
+    expect(list).toEqual([{ name: "wa-main", provider: "google-app" }]);
+    expect(calls[0].sql).toMatch(/provider in \('google-app','shopify-app'\)/i);
+    expect(calls[0].sql).not.toMatch(/data_encrypted/i);
   });
 });
