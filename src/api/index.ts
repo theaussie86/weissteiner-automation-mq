@@ -16,6 +16,7 @@ import {
   CREDENTIAL_NAME_PATTERN,
   deleteCredential,
   deleteOAuthApp,
+  getOAuthApp,
   listCredentials,
   listOAuthApps,
   upsertCredential,
@@ -283,47 +284,63 @@ function oauthRedirectUri(provider: "google" | "shopify"): string | null {
   return config.PUBLIC_BASE_URL ? `${config.PUBLIC_BASE_URL}/credentials/callback/${provider}` : null;
 }
 
-app.post<{ Body: { name: string; scopes: string[] } }>(
+app.post<{ Body: { name: string; app: string; scopes: string[] } }>(
   "/admin/credentials/google/connect",
   async (request, reply) => {
     if (!requireAdmin(request, reply)) return;
     const redirectUri = oauthRedirectUri("google");
-    if (!config.CREDENTIAL_MASTER_KEY || !config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET || !redirectUri) {
-      return reply.code(503).send({ error: "Google OAuth not configured" });
+    if (!config.CREDENTIAL_MASTER_KEY || !redirectUri) {
+      return reply.code(503).send({ error: "Credential store not configured" });
     }
-    const { name, scopes } = request.body ?? {};
+    const { name, app, scopes } = request.body ?? {};
     if (typeof name !== "string" || !CREDENTIAL_NAME_PATTERN.test(name)) {
       return reply.code(422).send({ error: "Invalid name: lowercase letters, digits, hyphens, max 64 chars" });
     }
+    if (typeof app !== "string" || !app) return reply.code(422).send({ error: "app (OAuth app name) required" });
     if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((s) => typeof s === "string")) {
       return reply.code(422).send({ error: "scopes[] required" });
     }
-    const state = await createState(redis, { name, provider: "google", scopes });
-    const authUrl = google.buildAuthUrl({ clientId: config.GOOGLE_CLIENT_ID, redirectUri, scopes, state });
+    let oauthApp;
+    try {
+      oauthApp = await getOAuthApp(db, config.CREDENTIAL_MASTER_KEY, app);
+    } catch {
+      return reply.code(422).send({ error: `OAuth app not found: ${app}` });
+    }
+    if (oauthApp.provider !== "google") return reply.code(422).send({ error: `App '${app}' is not a google app` });
+    const state = await createState(redis, { name, provider: "google", app, scopes });
+    const authUrl = google.buildAuthUrl({ clientId: oauthApp.clientId, redirectUri, scopes, state });
     return { authUrl };
   },
 );
 
-app.post<{ Body: { name: string; shop: string; scopes: string[] } }>(
+app.post<{ Body: { name: string; app: string; shop: string; scopes: string[] } }>(
   "/admin/credentials/shopify/connect",
   async (request, reply) => {
     if (!requireAdmin(request, reply)) return;
     const redirectUri = oauthRedirectUri("shopify");
-    if (!config.CREDENTIAL_MASTER_KEY || !config.SHOPIFY_CLIENT_ID || !config.SHOPIFY_CLIENT_SECRET || !redirectUri) {
-      return reply.code(503).send({ error: "Shopify OAuth not configured" });
+    if (!config.CREDENTIAL_MASTER_KEY || !redirectUri) {
+      return reply.code(503).send({ error: "Credential store not configured" });
     }
-    const { name, shop, scopes } = request.body ?? {};
+    const { name, app, shop, scopes } = request.body ?? {};
     if (typeof name !== "string" || !CREDENTIAL_NAME_PATTERN.test(name)) {
       return reply.code(422).send({ error: "Invalid name: lowercase letters, digits, hyphens, max 64 chars" });
     }
+    if (typeof app !== "string" || !app) return reply.code(422).send({ error: "app (OAuth app name) required" });
     if (typeof shop !== "string" || !shopify.SHOP_PATTERN.test(shop)) {
       return reply.code(422).send({ error: "Invalid shop: expected <shop>.myshopify.com" });
     }
     if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((s) => typeof s === "string")) {
       return reply.code(422).send({ error: "scopes[] required" });
     }
-    const state = await createState(redis, { name, provider: "shopify", shop });
-    const authUrl = shopify.buildAuthUrl({ clientId: config.SHOPIFY_CLIENT_ID, shop, scopes, redirectUri, state });
+    let oauthApp;
+    try {
+      oauthApp = await getOAuthApp(db, config.CREDENTIAL_MASTER_KEY, app);
+    } catch {
+      return reply.code(422).send({ error: `OAuth app not found: ${app}` });
+    }
+    if (oauthApp.provider !== "shopify") return reply.code(422).send({ error: `App '${app}' is not a shopify app` });
+    const state = await createState(redis, { name, provider: "shopify", app, shop });
+    const authUrl = shopify.buildAuthUrl({ clientId: oauthApp.clientId, shop, scopes, redirectUri, state });
     return { authUrl };
   },
 );
@@ -332,17 +349,23 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
   "/credentials/callback/google",
   async (request, reply) => {
     const redirectUri = oauthRedirectUri("google");
-    if (!config.CREDENTIAL_MASTER_KEY || !config.GOOGLE_CLIENT_ID || !config.GOOGLE_CLIENT_SECRET || !redirectUri) {
-      return reply.code(503).send({ error: "Google OAuth not configured" });
+    if (!config.CREDENTIAL_MASTER_KEY || !redirectUri) {
+      return reply.code(503).send({ error: "Credential store not configured" });
     }
     const { code, state } = request.query;
     const payload = state ? await consumeState(redis, state) : null;
-    if (!code || !payload || payload.provider !== "google") {
+    if (!code || !payload || payload.provider !== "google" || !payload.app) {
       return reply.code(403).send({ error: "Invalid or expired state" });
     }
+    let oauthApp;
+    try {
+      oauthApp = await getOAuthApp(db, config.CREDENTIAL_MASTER_KEY, payload.app);
+    } catch {
+      return reply.code(409).send({ error: `OAuth app gone: ${payload.app}` });
+    }
     const tokens = await google.exchangeCode({
-      clientId: config.GOOGLE_CLIENT_ID,
-      clientSecret: config.GOOGLE_CLIENT_SECRET,
+      clientId: oauthApp.clientId,
+      clientSecret: oauthApp.clientSecret,
       redirectUri,
       code,
     });
@@ -351,6 +374,7 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
       provider: "google",
       data: { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, scopes: tokens.scopes },
       tokenExpiresAt: tokens.expiresAt,
+      parentCredentialId: oauthApp.id,
     });
     if (!ok) return reply.code(409).send({ error: `Name already used by another provider: ${payload.name}` });
     return reply.type("text/plain").send(`Credential '${payload.name}' (google) verbunden. Fenster kann geschlossen werden.`);
@@ -360,21 +384,28 @@ app.get<{ Querystring: { code?: string; state?: string } }>(
 app.get<{ Querystring: Record<string, string | undefined> }>(
   "/credentials/callback/shopify",
   async (request, reply) => {
-    if (!config.CREDENTIAL_MASTER_KEY || !config.SHOPIFY_CLIENT_ID || !config.SHOPIFY_CLIENT_SECRET) {
-      return reply.code(503).send({ error: "Shopify OAuth not configured" });
+    if (!config.CREDENTIAL_MASTER_KEY) {
+      return reply.code(503).send({ error: "Credential store not configured" });
     }
     const { code, state, shop } = request.query;
-    if (!shopify.verifyCallbackHmac(request.query, config.SHOPIFY_CLIENT_SECRET)) {
-      return reply.code(403).send({ error: "Invalid HMAC" });
-    }
     const payload = state ? await consumeState(redis, state) : null;
-    if (!code || !payload || payload.provider !== "shopify" || payload.shop !== shop) {
+    if (!code || !payload || payload.provider !== "shopify" || payload.shop !== shop || !payload.app) {
       return reply.code(403).send({ error: "Invalid or expired state" });
+    }
+    let oauthApp;
+    try {
+      oauthApp = await getOAuthApp(db, config.CREDENTIAL_MASTER_KEY, payload.app);
+    } catch {
+      return reply.code(409).send({ error: `OAuth app gone: ${payload.app}` });
+    }
+    // HMAC erst nach State-Konsum: das Secret stammt aus der referenzierten App-Row.
+    if (!shopify.verifyCallbackHmac(request.query, oauthApp.clientSecret)) {
+      return reply.code(403).send({ error: "Invalid HMAC" });
     }
     const tokens = await shopify.exchangeCode({
       shop: payload.shop!,
-      clientId: config.SHOPIFY_CLIENT_ID,
-      clientSecret: config.SHOPIFY_CLIENT_SECRET,
+      clientId: oauthApp.clientId,
+      clientSecret: oauthApp.clientSecret,
       code,
     });
     const ok = await upsertCredential(db, config.CREDENTIAL_MASTER_KEY, {
@@ -382,6 +413,7 @@ app.get<{ Querystring: Record<string, string | undefined> }>(
       provider: "shopify",
       data: { shop: tokens.shop, accessToken: tokens.accessToken },
       tokenExpiresAt: null,
+      parentCredentialId: oauthApp.id,
     });
     if (!ok) return reply.code(409).send({ error: `Name already used by another provider: ${payload.name}` });
     return reply.type("text/plain").send(`Credential '${payload.name}' (shopify) verbunden. Fenster kann geschlossen werden.`);
