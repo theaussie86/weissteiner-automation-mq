@@ -82,16 +82,18 @@ Verschlüsselte Drittdienst-Zugänge in Postgres, referenziert per Name-Slug im 
 | Env | Zweck |
 |---|---|
 | `CREDENTIAL_MASTER_KEY` | 32 Byte base64 (`openssl rand -base64 32`); ohne Wert ist der Store deaktiviert |
-| `GOOGLE_CLIENT_ID/SECRET` | Google-OAuth-App (Redirect-URI: `<PUBLIC_BASE_URL>/credentials/callback/google`) |
-| `SHOPIFY_CLIENT_ID/SECRET` | Shopify-App (Redirect-URI: `<PUBLIC_BASE_URL>/credentials/callback/shopify`) |
 
 Endpoints (Admin: `x-admin-key`):
 
 - `POST /admin/credentials` - apikey-Credential anlegen (`{name, provider: "apikey", data}`)
 - `GET /admin/credentials` - Liste ohne Secrets
 - `DELETE /admin/credentials/:name`
-- `POST /admin/credentials/google/connect` (`{name, scopes[]}`) bzw. `.../shopify/connect` (`{name, shop, scopes[]}`) - liefert `authUrl`, Consent im Browser durchklicken
-- `GET /credentials/callback/<provider>` - öffentlich, durch single-use State geschützt
+- `POST /admin/credentials/oauth-app` - OAuth-App anlegen (`{name, provider: "google"|"shopify", clientId, clientSecret}`); Client-Secret wird verschlüsselt im Store abgelegt
+- `GET /admin/credentials/oauth-app` - App-Liste ohne Secrets
+- `DELETE /admin/credentials/oauth-app/:name` - App löschen (kaskadiert: verknüpfte Tokens werden mitgelöscht)
+- `POST /admin/credentials/google/connect` (`{name, app, scopes[]}`) - liefert `authUrl`, Consent im Browser durchklicken; `app` referenziert eine zuvor angelegte OAuth-App
+- `POST /admin/credentials/shopify/connect` (`{name, app, shop, scopes[]}`) - liefert `authUrl`, Consent im Browser durchklicken; `app` referenziert eine zuvor angelegte OAuth-App
+- `GET /credentials/callback/<provider>` - öffentlich, durch single-use State geschützt; Redirect-URI je Provider ist `<PUBLIC_BASE_URL>/credentials/callback/<provider>` (zu hinterlegen in der Google-/Shopify-App)
 
 OAuth-Tokens werden lazy beim Lesen refresht (Row-Lock) plus alle 30 min proaktiv
 (`credentials.refresh`, Horizont 45 min). Schlägt ein Refresh fehl, steht das Credential
