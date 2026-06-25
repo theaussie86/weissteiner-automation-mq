@@ -98,13 +98,15 @@ app.addHook("onRequest", async (request, reply) => {
   request.consumer = consumer;
 });
 
-app.get("/health", async () => {
+app.get("/health", async (_request, reply) => {
   const [redisOk, dbOk] = await Promise.all([
     redis.ping().then(() => true, () => false),
     db.query("select 1").then(() => true, () => false),
   ]);
   const healthy = redisOk && dbOk;
-  return { status: healthy ? "ok" : "degraded", redis: redisOk, postgres: dbOk };
+  return reply
+    .code(healthy ? 200 : 503)
+    .send({ status: healthy ? "ok" : "degraded", redis: redisOk, postgres: dbOk });
 });
 
 app.post<{ Body: { name: string; queueScopes: string[] } }>(
