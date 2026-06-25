@@ -25,6 +25,16 @@ import {
 import { consumeState, createState } from "../credentials/state.js";
 import * as google from "../credentials/providers/google.js";
 import * as shopify from "../credentials/providers/shopify.js";
+import {
+  createSchedule,
+  deleteSchedule,
+  getSchedule,
+  listActiveSchedules,
+  listSchedules,
+  SCHEDULE_NAME_PATTERN,
+} from "../schedules/store.js";
+import { isCronShape, isValidTimezone } from "../schedules/validate.js";
+import { removeScheduler, upsertScheduler } from "../schedules/sync.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 import "../jobs/cleanup.js";
@@ -52,6 +62,23 @@ function getQueue(name: string): Queue {
   }
   return queue;
 }
+
+// Boot-Sync (ADR-0008): aktive Schedules idempotent in BullMQ upserten - gleiches
+// Muster wie der stündliche Cleanup im Worker. Reproduziert Schedules nach Redeploy
+// oder Redis-Verlust aus der Source of Truth in Postgres.
+async function syncSchedulesOnBoot(): Promise<void> {
+  const active = await listActiveSchedules(db);
+  for (const schedule of active) {
+    const jobType = getJobType(schedule.jobType);
+    if (!jobType) {
+      console.error(JSON.stringify({ event: "schedule.skip", reason: "unknown_job_type", schedule: schedule.name }));
+      continue;
+    }
+    await upsertScheduler(getQueue(jobType.queue), schedule);
+  }
+  console.log(JSON.stringify({ event: "schedule.synced", count: active.length }));
+}
+await syncSchedulesOnBoot();
 
 async function findConsumerByKey(key: string): Promise<Consumer | null> {
   const result = await db.query<{ id: string; name: string; queue_scopes: string[] }>(
@@ -275,6 +302,72 @@ app.delete<{ Params: { name: string } }>("/admin/credentials/oauth-app/:name", a
   if (!requireAdmin(request, reply)) return;
   const removed = await deleteOAuthApp(db, request.params.name);
   if (!removed) return reply.code(404).send({ error: "OAuth app not found" });
+  return reply.code(204).send();
+});
+
+// Native Schedules (ADR-0008): Source of Truth ist die schedule-Tabelle; der BullMQ-Scheduler
+// wird sofort mit upsertet/entfernt. Ein gescheduelter Job läuft durch denselben Worker-Pfad
+// wie ein POST /jobs-Job.
+app.post<{ Body: { name: string; cron: string; tz?: string; jobType: string; payload?: unknown; consumer: string } }>(
+  "/admin/schedules",
+  async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    const { name, cron, tz, jobType: jobTypeName, payload, consumer } = request.body ?? {};
+    if (typeof name !== "string" || !SCHEDULE_NAME_PATTERN.test(name)) {
+      return reply.code(422).send({ error: "Invalid name: lowercase letters, digits, hyphens, max 64 chars" });
+    }
+    if (typeof cron !== "string" || !isCronShape(cron)) {
+      return reply.code(422).send({ error: "Invalid cron: expected 5 or 6 space-separated fields" });
+    }
+    const timezone = tz ?? "UTC";
+    if (!isValidTimezone(timezone)) {
+      return reply.code(422).send({ error: `Invalid tz: ${timezone}` });
+    }
+    if (typeof consumer !== "string" || !consumer) {
+      return reply.code(422).send({ error: "consumer required" });
+    }
+    const jobType = typeof jobTypeName === "string" ? getJobType(jobTypeName) : undefined;
+    if (!jobType) {
+      return reply.code(422).send({ error: `Unknown job type: ${jobTypeName}` });
+    }
+    const parsed = jobType.payloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      return reply.code(422).send({ error: "Invalid payload", issues: parsed.error.issues });
+    }
+    const record = await createSchedule(db, {
+      name,
+      cron,
+      tz: timezone,
+      jobType: jobType.name,
+      payload: parsed.data,
+      consumer,
+    });
+    if (!record) return reply.code(409).send({ error: `Schedule already exists: ${name}` });
+    try {
+      await upsertScheduler(getQueue(jobType.queue), record);
+    } catch (err) {
+      // Cron vom BullMQ-Scheduler abgelehnt: Zeile zurücknehmen, damit DB und Scheduler konsistent bleiben.
+      await deleteSchedule(db, name);
+      return reply.code(422).send({ error: `Scheduler rejected cron: ${(err as Error).message}` });
+    }
+    return reply.code(201).send({ id: record.id, name: record.name, queue: jobType.queue });
+  },
+);
+
+app.get("/admin/schedules", async (request, reply) => {
+  if (!requireAdmin(request, reply)) return;
+  const schedules = await listSchedules(db);
+  return { schedules, count: schedules.length };
+});
+
+app.delete<{ Params: { name: string } }>("/admin/schedules/:name", async (request, reply) => {
+  if (!requireAdmin(request, reply)) return;
+  // Erst die Zeile lesen, um aus dem Job-Typ die Queue des Schedulers zu bestimmen.
+  const existing = await getSchedule(db, request.params.name);
+  if (!existing) return reply.code(404).send({ error: "Schedule not found" });
+  const jobType = getJobType(existing.jobType);
+  await deleteSchedule(db, request.params.name);
+  if (jobType) await removeScheduler(getQueue(jobType.queue), request.params.name).catch(() => false);
   return reply.code(204).send();
 });
 
