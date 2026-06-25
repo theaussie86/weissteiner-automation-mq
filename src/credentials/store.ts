@@ -19,11 +19,14 @@ export interface Refresher {
 
 // Lädt Client-ID/Secret aus der verknüpften App-Row (plain select, kein Lock —
 // das Secret ändert sich beim Token-Refresh nicht).
+// Sicherheits-Guard: nur Rows mit provider 'google-app' oder 'shopify-app' werden
+// akzeptiert — ein normaler Token-Row (provider 'google') darf hier nicht durchkommen.
 async function loadAppCreds(client: CredentialClient, masterKey: string, parentId: string | null): Promise<AppCreds | null> {
   if (!parentId) return null;
-  const res = await client.query("select name, data_encrypted from credential where id = $1", [parentId]);
-  const row = res.rows[0] as { name: string; data_encrypted: Buffer } | undefined;
+  const res = await client.query("select name, provider, data_encrypted from credential where id = $1", [parentId]);
+  const row = res.rows[0] as { name: string; provider: string; data_encrypted: Buffer } | undefined;
   if (!row) return null;
+  if (row.provider !== "google-app" && row.provider !== "shopify-app") return null;
   const data = decryptCredential(masterKey, row.name, row.data_encrypted);
   return { clientId: data.client_id as string, clientSecret: data.client_secret as string };
 }

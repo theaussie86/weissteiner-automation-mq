@@ -40,7 +40,8 @@ function fakePool(row: Row | null) {
 }
 
 // Fake-Pool, der Token-Row (for update) UND App-Row (by id) bedient.
-function fakePoolWithApp(tokenRow: Row & { parent_credential_id: string | null }, appRow: { id: string; name: string; data_encrypted: Buffer } | null) {
+// appRow enthält jetzt 'provider', damit der loadAppCreds-Guard greift.
+function fakePoolWithApp(tokenRow: Row & { parent_credential_id: string | null }, appRow: { id: string; name: string; provider?: string; data_encrypted: Buffer } | null) {
   const log: string[] = [];
   const client = {
     query: async (sql: string, params?: unknown[]) => {
@@ -56,7 +57,9 @@ function fakePoolWithApp(tokenRow: Row & { parent_credential_id: string | null }
           // Status-only update (no-app path): kein data_encrypted in params
           tokenRow.status = "reauth_required";
         } else {
+          // params: [data_encrypted, token_expires_at, status, name]
           tokenRow.data_encrypted = params![0] as Buffer;
+          tokenRow.token_expires_at = params![1] as Date | null;
           tokenRow.status = (params!.length >= 3 ? params![2] : tokenRow.status) as string;
         }
         return { rows: [], rowCount: 1 };
@@ -79,7 +82,7 @@ function googleRow(expiresAt: Date | null, status = "ok"): Row {
 }
 
 const appData = encryptCredential(masterKey, "google-app-1", { client_id: "cid", client_secret: "csec" });
-const appRow = { id: "app-uuid", name: "google-app-1", data_encrypted: appData };
+const appRow = { id: "app-uuid", name: "google-app-1", provider: "google-app", data_encrypted: appData };
 
 const refreshers: Record<string, Refresher> = {
   google: async (data, _appCreds) => ({
@@ -138,7 +141,7 @@ describe("getCredential", () => {
   it("refreshes an expiring token using parent app credentials", async () => {
     const appData = encryptCredential(masterKey, "google-app-1", { client_id: "cid", client_secret: "csec" });
     const tokenRow = { name: "google-wm", provider: "google", data_encrypted: encryptCredential(masterKey, "google-wm", { accessToken: "old", refreshToken: "rt", scopes: [] }), token_expires_at: new Date(NOW + 1000), status: "ok", parent_credential_id: "app-uuid" };
-    const { pool } = fakePoolWithApp(tokenRow, { id: "app-uuid", name: "google-app-1", data_encrypted: appData });
+    const { pool } = fakePoolWithApp(tokenRow, { id: "app-uuid", name: "google-app-1", provider: "google-app", data_encrypted: appData });
     let seenCreds: AppCreds | null = null;
     const refreshers2: Record<string, Refresher> = {
       google: async (data, appCreds) => { seenCreds = appCreds; return { data: { ...data, accessToken: "fresh" }, expiresAt: new Date(NOW + 3600_000) }; },
@@ -154,6 +157,33 @@ describe("getCredential", () => {
     const refreshers3: Record<string, Refresher> = { google: async (d, _a) => ({ data: d, expiresAt: new Date(NOW) }) };
     await expect(getCredential(pool, masterKey, "google-wm", refreshers3, NOW)).rejects.toThrow(/reauth/i);
     expect(tokenRow.status).toBe("reauth_required");
+  });
+
+  // Fix 2: Happy-Path-Refresh persistiert token_expires_at korrekt
+  it("refreshes expiring token and persists token_expires_at from refresher", async () => {
+    const tokenRow = { name: "google-wm", provider: "google", data_encrypted: encryptCredential(masterKey, "google-wm", { accessToken: "old", refreshToken: "rt", scopes: [] }), token_expires_at: new Date(NOW + 30_000), status: "ok", parent_credential_id: "app-uuid" };
+    const { pool } = fakePoolWithApp(tokenRow, appRow);
+    const data = await getCredential(pool, masterKey, "google-wm", refreshers, NOW);
+    expect(data.accessToken).toBe("fresh");
+    // Der Refresher gibt expiresAt: new Date(NOW + 3600_000) zurück — das muss persistiert werden.
+    expect(tokenRow.token_expires_at).toEqual(new Date(NOW + 3600_000));
+    expect(tokenRow.status).toBe("ok");
+  });
+
+  // Fix 1: Provider-Guard in loadAppCreds — parent_credential_id zeigt auf eine
+  // normale Token-Row (provider 'google', kein -app-Suffix) → Guard schlägt an →
+  // reauth_required, Refresher wird NICHT aufgerufen.
+  it("sets reauth_required when parent row has non-app provider (provider guard)", async () => {
+    const nonAppRow = { id: "bad-uuid", name: "google-wm", provider: "google", data_encrypted: encryptCredential(masterKey, "google-wm", { client_id: "cid", client_secret: "csec" }) };
+    const tokenRow = { name: "google-tok", provider: "google", data_encrypted: encryptCredential(masterKey, "google-tok", { accessToken: "old", refreshToken: "rt", scopes: [] }), token_expires_at: new Date(NOW + 30_000), status: "ok", parent_credential_id: "bad-uuid" };
+    const { pool } = fakePoolWithApp(tokenRow, nonAppRow);
+    let refresherCalled = false;
+    const guardRefreshers: Record<string, Refresher> = {
+      google: async (d, _a) => { refresherCalled = true; return { data: d, expiresAt: new Date(NOW + 3600_000) }; },
+    };
+    await expect(getCredential(pool, masterKey, "google-tok", guardRefreshers, NOW)).rejects.toThrow(/reauth/i);
+    expect(tokenRow.status).toBe("reauth_required");
+    expect(refresherCalled).toBe(false);
   });
 });
 
@@ -192,6 +222,12 @@ describe("oauth app store", () => {
   it("getOAuthApp rejects a non-app credential", async () => {
     const { pool } = fakeQueryPool([{ id: "u1", provider: "google", data_encrypted: Buffer.alloc(0) }]);
     await expect(getOAuthApp(pool, masterKey, "wa-main")).rejects.toThrow(/not an OAuth app/i);
+  });
+
+  // Fix 3: getOAuthApp wirft bei leerem Ergebnis (Row nicht gefunden)
+  it("getOAuthApp throws not found when credential does not exist", async () => {
+    const { pool } = fakeQueryPool([]);
+    await expect(getOAuthApp(pool, masterKey, "ghost")).rejects.toThrow(/not found/i);
   });
 
   it("listOAuthApps selects only app providers without secrets", async () => {
