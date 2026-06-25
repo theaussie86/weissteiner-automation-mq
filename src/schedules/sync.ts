@@ -1,7 +1,7 @@
 import type { Queue } from "bullmq";
 import type { ScheduleRecord } from "./store.js";
 
-// Nur die zwei Queue-Methoden, die der Sync braucht — erleichtert das Testen mit Fakes.
+// Nur die zwei Queue-Methoden, die der Sync braucht - erleichtert das Testen mit Fakes.
 export type SchedulerQueue = Pick<Queue, "upsertJobScheduler" | "removeJobScheduler">;
 
 // Übersetzt einen Schedule-Record in einen BullMQ-Job-Scheduler. Die job.data-Form

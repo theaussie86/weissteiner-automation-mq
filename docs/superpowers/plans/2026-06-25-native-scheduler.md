@@ -475,7 +475,7 @@ Create `src/schedules/sync.ts`:
 import type { Queue } from "bullmq";
 import type { ScheduleRecord } from "./store.js";
 
-// Nur die zwei Queue-Methoden, die der Sync braucht — erleichtert das Testen mit Fakes.
+// Nur die zwei Queue-Methoden, die der Sync braucht - erleichtert das Testen mit Fakes.
 export type SchedulerQueue = Pick<Queue, "upsertJobScheduler" | "removeJobScheduler">;
 
 // Übersetzt einen Schedule-Record in einen BullMQ-Job-Scheduler. Die job.data-Form
@@ -550,7 +550,7 @@ import { removeScheduler, upsertScheduler } from "../schedules/sync.js";
 In `src/api/index.ts`, direkt nach der `getQueue`-Funktion (nach Zeile ~54), einfügen:
 
 ```ts
-// Boot-Sync (ADR-0008): aktive Schedules idempotent in BullMQ upserten — gleiches
+// Boot-Sync (ADR-0008): aktive Schedules idempotent in BullMQ upserten - gleiches
 // Muster wie der stündliche Cleanup im Worker. Reproduziert Schedules nach Redeploy
 // oder Redis-Verlust aus der Source of Truth in Postgres.
 async function syncSchedulesOnBoot(): Promise<void> {
