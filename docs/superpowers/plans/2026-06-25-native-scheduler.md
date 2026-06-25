@@ -12,11 +12,11 @@
 
 - **Sprache/Doku:** Kommentare und Doku auf Deutsch, echte Umlaute (ä/ö/ü/ß), keine ae/oe/ue/ss-Ersetzung. Nur einzelne Bindestriche, keine Gedankenstriche.
 - **ESM-Imports:** Lokale Imports immer mit `.js`-Endung (z.B. `from "./store.js"`), auch für `.ts`-Quellen — Projekt ist `"type": "module"`.
-- **Test-Stil:** Unit-Tests mit In-Memory-Fake-Pool/Fake-Queue (kein echtes Postgres/Redis im Test), exakt wie `src/credentials/store.test.ts`. Echtes End-to-End nur als manuelle Verifikation (Task 6).
+- **Test-Stil:** Unit-Tests mit In-Memory-Fake-Pool/Fake-Queue (kein echtes Postgres/Redis im Test), exakt wie `src/credentials/store.test.ts`. Echtes End-to-End nur als manuelle Verifikation (Task 5).
 - **Admin-Guard:** Alle `/admin/*`-Routen laufen hinter `requireAdmin` (Header `x-admin-key`), das ist schon im `onRequest`-Hook ausgenommen von der API-Key-Prüfung.
 - **Name-Pattern:** Schedule-Name `^[a-z0-9][a-z0-9-]{0,63}$` (wie `CREDENTIAL_NAME_PATTERN`).
 - **Migration-Timestamp:** Neue Migration muss numerisch nach `1750800000000_oauth_app.cjs` liegen — nutze `1750900000000_schedule.cjs`.
-- **Scope-Grenze (YAGNI):** Kein Update/Deactivate-Endpoint, kein FlowProducer, keine Pinterest-/Supabase-Credentials, kein Archivieren von Schedule-Läufen (Follow-up, siehe Task 6). Nur create/list/delete + Boot-Sync.
+- **Scope-Grenze (YAGNI):** Kein Update/Deactivate-Endpoint, kein FlowProducer, keine Pinterest-/Supabase-Credentials, kein Archivieren von Schedule-Läufen (Follow-up, siehe Task 5). Nur create/list/delete + Boot-Sync.
 
 ---
 
@@ -156,7 +156,7 @@ describe("schedule store", () => {
     expect(SCHEDULE_NAME_PATTERN.test("Pinfinity Ping")).toBe(false);
   });
 
-  it("legt einen schedule an und gibt den record zurueck", async () => {
+  it("legt einen schedule an und gibt den record zurück", async () => {
     const db = fakePool();
     const record = await createSchedule(db, input);
     expect(record).not.toBeNull();
@@ -166,7 +166,7 @@ describe("schedule store", () => {
     expect(record!.active).toBe(true);
   });
 
-  it("gibt null bei doppeltem namen zurueck", async () => {
+  it("gibt null bei doppeltem namen zurück", async () => {
     const db = fakePool();
     await createSchedule(db, input);
     const dupe = await createSchedule(db, input);
@@ -189,7 +189,7 @@ describe("schedule store", () => {
     expect(await getSchedule(db, "fehlt")).toBeNull();
   });
 
-  it("loescht nach namen und meldet treffer", async () => {
+  it("löscht nach namen und meldet treffer", async () => {
     const db = fakePool();
     await createSchedule(db, input);
     expect(await deleteSchedule(db, "pinfinity-ping")).toBe(true);
@@ -211,7 +211,7 @@ Create `src/schedules/store.ts`:
 ```ts
 import type pg from "pg";
 
-// Schedule-Store (ADR-0008): die schedule-Tabelle ist Source of Truth fuer alle
+// Schedule-Store (ADR-0008): die schedule-Tabelle ist Source of Truth für alle
 // cron-gesteuerten Jobs. Der BullMQ-Scheduler wird daraus abgeleitet (siehe sync.ts).
 export const SCHEDULE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -348,7 +348,7 @@ describe("schedule validation", () => {
     expect(isCronShape("   ")).toBe(false);
   });
 
-  it("erkennt gueltige timezones", () => {
+  it("erkennt gültige timezones", () => {
     expect(isValidTimezone("Europe/Vienna")).toBe(true);
     expect(isValidTimezone("UTC")).toBe(true);
   });
@@ -398,7 +398,7 @@ Expected: PASS (4 Tests grün).
 
 ```bash
 git add src/schedules/validate.ts src/schedules/validate.test.ts
-git commit -m "feat: schedule-Validierung fuer cron-form und timezone"
+git commit -m "feat: schedule-Validierung für cron-form und timezone"
 ```
 
 ---
@@ -574,7 +574,7 @@ In `src/api/index.ts`, nach dem `app.delete("/admin/credentials/oauth-app/:name"
 
 ```ts
 // Native Schedules (ADR-0008): Source of Truth ist die schedule-Tabelle; der BullMQ-Scheduler
-// wird sofort mit upsertet/entfernt. Ein gescheduelter Job laeuft durch denselben Worker-Pfad
+// wird sofort mit upsertet/entfernt. Ein gescheduelter Job läuft durch denselben Worker-Pfad
 // wie ein POST /jobs-Job.
 app.post<{ Body: { name: string; cron: string; tz?: string; jobType: string; payload?: unknown; consumer: string } }>(
   "/admin/schedules",
@@ -614,7 +614,7 @@ app.post<{ Body: { name: string; cron: string; tz?: string; jobType: string; pay
     try {
       await upsertScheduler(getQueue(jobType.queue), record);
     } catch (err) {
-      // Cron vom BullMQ-Scheduler abgelehnt: Zeile zuruecknehmen, damit DB und Scheduler konsistent bleiben.
+      // Cron vom BullMQ-Scheduler abgelehnt: Zeile zurücknehmen, damit DB und Scheduler konsistent bleiben.
       await deleteSchedule(db, name);
       return reply.code(422).send({ error: `Scheduler rejected cron: ${(err as Error).message}` });
     }
