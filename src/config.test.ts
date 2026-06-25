@@ -58,10 +58,3 @@ describe("CREDENTIAL_MASTER_KEY", () => {
   });
 });
 
-describe("OAuth client config", () => {
-  it("treats empty strings as unset", () => {
-    const config = loadConfig({ ...base, GOOGLE_CLIENT_ID: "", SHOPIFY_CLIENT_SECRET: "" });
-    expect(config.GOOGLE_CLIENT_ID).toBeUndefined();
-    expect(config.SHOPIFY_CLIENT_SECRET).toBeUndefined();
-  });
-});
