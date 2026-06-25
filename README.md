@@ -56,6 +56,9 @@ curl "https://mq.weissteiner-automation.com/admin/jobs?tenant=wachmacherei&statu
 | `GET /files/:key?exp&sig` | HMAC-Signatur | Temp-URL-Auslieferung (24h TTL) |
 | `POST /admin/consumers` | Admin-Key | Consumer anlegen, Key einmalig im Klartext |
 | `GET /admin/jobs` | Admin-Key | Archiv-Abfrage (tenant/consumer/type/status) |
+| `POST /admin/schedules` | Admin-Key | Schedule anlegen (`name`, `cron`, `tz?`, `jobType`, `payload?`, `consumer`) |
+| `GET /admin/schedules` | Admin-Key | Schedules auflisten |
+| `DELETE /admin/schedules/:name` | Admin-Key | Schedule + BullMQ-Scheduler entfernen |
 
 **Job-Typen**: `integrations.ping` (Smoke-Test), `media.extract-audio` (MP3, Legacy-Defaults 128k/22.05kHz), `media.thumbnail` (JPEG/PNG-Frame). Registry: `src/jobs/`.
 
@@ -112,4 +115,4 @@ auf `reauth_required` - Connect-Flow erneut durchlaufen.
 
 ## Offen
 
-Credential Store mit OAuth-Flows (ADR-0002, nächster Block) · Flows als n8n-Ablöse (BullMQ Parent-Child) · Staging-Environment bei Bedarf.
+Nativer Scheduler steht (ADR-0008, `/admin/schedules`). Nächster Block: Pinfinity-Migration - Job-Typen `pinterest.publish-pin` (liest Token via Supabase-Service-Role, ADR-0009), `ai.generate-pin-metadata`, `scrape.blog-article` auf den Scheduler setzen · Schedule-Läufe ins Job-Archiv schreiben (aktuell archiviert nur `POST /jobs`) · Flows/FlowProducer erst beim ersten echten Fan-in-Fall · Staging-Environment bei Bedarf.
