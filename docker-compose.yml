@@ -13,6 +13,7 @@ services:
       - URL_SIGNING_SECRET=${URL_SIGNING_SECRET}
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
       - FILES_DIR=/data/files
+      - CREDENTIAL_MASTER_KEY=${CREDENTIAL_MASTER_KEY}
     volumes:
       - mq-files:/data/files
     healthcheck:
@@ -33,6 +34,7 @@ services:
       - URL_SIGNING_SECRET=${URL_SIGNING_SECRET}
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
       - FILES_DIR=/data/files
+      - CREDENTIAL_MASTER_KEY=${CREDENTIAL_MASTER_KEY}
     volumes:
       - mq-files:/data/files
 

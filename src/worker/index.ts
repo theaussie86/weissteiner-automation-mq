@@ -18,15 +18,17 @@ const connection = createRedis(config.REDIS_URL);
 const db = new pg.Pool({ connectionString: config.DATABASE_URL });
 
 // Credential-Kontext (ADR-0002): Lazy-Refresh läuft zentral hier, nie in Job-Code.
-const refreshers: Record<string, Refresher> = {};
-if (config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET) {
-  const clientId = config.GOOGLE_CLIENT_ID;
-  const clientSecret = config.GOOGLE_CLIENT_SECRET;
-  refreshers.google = async (data) => {
-    const result = await refreshAccessToken({ clientId, clientSecret, refreshToken: data.refreshToken as string });
+// Client-ID/Secret kommen pro Token aus der verknüpften App-Row (getCredential löst sie auf).
+const refreshers: Record<string, Refresher> = {
+  google: async (data, appCreds) => {
+    const result = await refreshAccessToken({
+      clientId: appCreds.clientId,
+      clientSecret: appCreds.clientSecret,
+      refreshToken: data.refreshToken as string,
+    });
     return { data: { ...data, accessToken: result.accessToken }, expiresAt: result.expiresAt };
-  };
-}
+  },
+};
 const ctx: JobContext = {
   db,
   getCredential: (name) => {

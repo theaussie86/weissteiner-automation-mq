@@ -31,4 +31,15 @@ describe("oauth state", () => {
   it("returns null for unknown state", async () => {
     expect(await consumeState(fakeRedis(), "deadbeef")).toBeNull();
   });
+
+  it("round-trips the app name in the state payload", async () => {
+    const store = new Map<string, string>();
+    const redis = {
+      set: async (k: string, v: string) => void store.set(k, v),
+      getdel: async (k: string) => { const v = store.get(k) ?? null; store.delete(k); return v; },
+    };
+    const state = await createState(redis as any, { name: "kunde-a", provider: "google", app: "wa-main", scopes: ["s"] });
+    const payload = await consumeState(redis as any, state);
+    expect(payload?.app).toBe("wa-main");
+  });
 });
