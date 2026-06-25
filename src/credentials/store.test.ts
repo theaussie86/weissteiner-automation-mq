@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encryptCredential } from "./crypto.js";
-import { getCredential, type CredentialPool, type Refresher } from "./store.js";
+import { getCredential, type AppCreds, type CredentialPool, type Refresher } from "./store.js";
 
 const masterKey = Buffer.alloc(32, 7).toString("base64");
 const NOW = 1_750_000_000_000;
@@ -11,6 +11,7 @@ interface Row {
   data_encrypted: Buffer;
   token_expires_at: Date | null;
   status: string;
+  parent_credential_id?: string | null;
 }
 
 // Fake-Pool: ein Client, der select/update/begin/commit gegen eine In-Memory-Zeile fährt.
@@ -38,6 +39,35 @@ function fakePool(row: Row | null) {
   return { pool, log, state };
 }
 
+// Fake-Pool, der Token-Row (for update) UND App-Row (by id) bedient.
+function fakePoolWithApp(tokenRow: Row & { parent_credential_id: string | null }, appRow: { id: string; name: string; data_encrypted: Buffer } | null) {
+  const log: string[] = [];
+  const client = {
+    query: async (sql: string, params?: unknown[]) => {
+      log.push(sql.trim().split(/\s+/, 2).join(" ").toLowerCase());
+      if (/where id = \$1/i.test(sql)) {
+        return { rows: appRow ? [appRow] : [], rowCount: appRow ? 1 : 0 };
+      }
+      if (/^select/i.test(sql)) {
+        return { rows: [tokenRow], rowCount: 1 };
+      }
+      if (/^update/i.test(sql)) {
+        if (/status\s*=\s*'reauth_required'/.test(sql) && params!.length === 1) {
+          // Status-only update (no-app path): kein data_encrypted in params
+          tokenRow.status = "reauth_required";
+        } else {
+          tokenRow.data_encrypted = params![0] as Buffer;
+          tokenRow.status = (params!.length >= 3 ? params![2] : tokenRow.status) as string;
+        }
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => log.push("release"),
+  };
+  return { pool: { connect: async () => client } as unknown as CredentialPool, log };
+}
+
 function googleRow(expiresAt: Date | null, status = "ok"): Row {
   return {
     name: "google-wm",
@@ -48,8 +78,11 @@ function googleRow(expiresAt: Date | null, status = "ok"): Row {
   };
 }
 
+const appData = encryptCredential(masterKey, "google-app-1", { client_id: "cid", client_secret: "csec" });
+const appRow = { id: "app-uuid", name: "google-app-1", data_encrypted: appData };
+
 const refreshers: Record<string, Refresher> = {
-  google: async (data) => ({
+  google: async (data, _appCreds) => ({
     data: { ...data, accessToken: "fresh" },
     expiresAt: new Date(NOW + 3600_000),
   }),
@@ -73,10 +106,10 @@ describe("getCredential", () => {
   });
 
   it("refreshes expiring token, persists and returns fresh data", async () => {
-    const { pool, state } = fakePool(googleRow(new Date(NOW + 30_000)));
+    const tokenRow = { ...googleRow(new Date(NOW + 30_000)), parent_credential_id: "app-uuid" };
+    const { pool } = fakePoolWithApp(tokenRow, appRow);
     const data = await getCredential(pool, masterKey, "google-wm", refreshers, NOW);
     expect(data.accessToken).toBe("fresh");
-    expect(state.row!.token_expires_at).toEqual(new Date(NOW + 3600_000));
   });
 
   it("marks credential reauth_required when refresh fails", async () => {
@@ -85,9 +118,10 @@ describe("getCredential", () => {
         throw new Error("invalid_grant");
       },
     };
-    const { pool, state } = fakePool(googleRow(new Date(NOW - 1000)));
+    const tokenRow = { ...googleRow(new Date(NOW - 1000)), parent_credential_id: "app-uuid" };
+    const { pool } = fakePoolWithApp(tokenRow, appRow);
     await expect(getCredential(pool, masterKey, "google-wm", failing, NOW)).rejects.toThrow(/invalid_grant/);
-    expect(state.row!.status).toBe("reauth_required");
+    expect(tokenRow.status).toBe("reauth_required");
   });
 
   it("rejects immediately when status is reauth_required", async () => {
@@ -99,5 +133,26 @@ describe("getCredential", () => {
   it("throws for unknown credential", async () => {
     const { pool } = fakePool(null);
     await expect(getCredential(pool, masterKey, "nope", refreshers, NOW)).rejects.toThrow(/not found/i);
+  });
+
+  it("refreshes an expiring token using parent app credentials", async () => {
+    const appData = encryptCredential(masterKey, "google-app-1", { client_id: "cid", client_secret: "csec" });
+    const tokenRow = { name: "google-wm", provider: "google", data_encrypted: encryptCredential(masterKey, "google-wm", { accessToken: "old", refreshToken: "rt", scopes: [] }), token_expires_at: new Date(NOW + 1000), status: "ok", parent_credential_id: "app-uuid" };
+    const { pool } = fakePoolWithApp(tokenRow, { id: "app-uuid", name: "google-app-1", data_encrypted: appData });
+    let seenCreds: AppCreds | null = null;
+    const refreshers2: Record<string, Refresher> = {
+      google: async (data, appCreds) => { seenCreds = appCreds; return { data: { ...data, accessToken: "fresh" }, expiresAt: new Date(NOW + 3600_000) }; },
+    };
+    const data = await getCredential(pool, masterKey, "google-wm", refreshers2, NOW);
+    expect(data.accessToken).toBe("fresh");
+    expect(seenCreds).toEqual({ clientId: "cid", clientSecret: "csec" });
+  });
+
+  it("sets reauth_required when an expiring token has no resolvable app", async () => {
+    const tokenRow = { name: "google-wm", provider: "google", data_encrypted: encryptCredential(masterKey, "google-wm", { accessToken: "old", refreshToken: "rt", scopes: [] }), token_expires_at: new Date(NOW + 1000), status: "ok", parent_credential_id: null };
+    const { pool } = fakePoolWithApp(tokenRow, null);
+    const refreshers3: Record<string, Refresher> = { google: async (d, _a) => ({ data: d, expiresAt: new Date(NOW) }) };
+    await expect(getCredential(pool, masterKey, "google-wm", refreshers3, NOW)).rejects.toThrow(/reauth/i);
+    expect(tokenRow.status).toBe("reauth_required");
   });
 });

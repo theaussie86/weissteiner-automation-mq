@@ -8,8 +8,24 @@ export const CREDENTIAL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const PROVIDERS = ["google", "shopify", "apikey"] as const;
 export type Provider = (typeof PROVIDERS)[number];
 
+export interface AppCreds {
+  clientId: string;
+  clientSecret: string;
+}
+
 export interface Refresher {
-  (data: Record<string, unknown>): Promise<{ data: Record<string, unknown>; expiresAt: Date }>;
+  (data: Record<string, unknown>, appCreds: AppCreds): Promise<{ data: Record<string, unknown>; expiresAt: Date }>;
+}
+
+// Lädt Client-ID/Secret aus der verknüpften App-Row (plain select, kein Lock —
+// das Secret ändert sich beim Token-Refresh nicht).
+async function loadAppCreds(client: CredentialClient, masterKey: string, parentId: string | null): Promise<AppCreds | null> {
+  if (!parentId) return null;
+  const res = await client.query("select name, data_encrypted from credential where id = $1", [parentId]);
+  const row = res.rows[0] as { name: string; data_encrypted: Buffer } | undefined;
+  if (!row) return null;
+  const data = decryptCredential(masterKey, row.name, row.data_encrypted);
+  return { clientId: data.client_id as string, clientSecret: data.client_secret as string };
 }
 
 // Strukturelles Pool-Interface: testbar ohne echtes pg.
@@ -34,11 +50,11 @@ export async function getCredential(
   try {
     await client.query("begin");
     const result = await client.query(
-      "select name, provider, data_encrypted, token_expires_at, status from credential where name = $1 for update",
+      "select name, provider, data_encrypted, token_expires_at, status, parent_credential_id from credential where name = $1 for update",
       [name],
     );
     const row = result.rows[0] as
-      | { name: string; provider: string; data_encrypted: Buffer; token_expires_at: Date | null; status: string }
+      | { name: string; provider: string; data_encrypted: Buffer; token_expires_at: Date | null; status: string; parent_credential_id: string | null }
       | undefined;
     if (!row) throw new Error(`Credential not found: ${name}`);
     if (row.status === "reauth_required") {
@@ -52,9 +68,20 @@ export async function getCredential(
       committed = true;
       return data;
     }
-    // Token läuft bald ab — Refresh versuchen
+    // Token läuft bald ab — Client-Creds der App laden und refreshen.
+    const appCreds = await loadAppCreds(client, masterKey, row.parent_credential_id);
+    if (!appCreds) {
+      // Keine auflösbaren App-Creds → kein Refresh möglich, als reauth_required markieren.
+      await client.query(
+        "update credential set status = 'reauth_required', updated_at = now() where name = $1",
+        [name],
+      );
+      await client.query("commit");
+      committed = true;
+      throw new Error(`Credential needs reauth: ${name} — App-Credentials nicht auflösbar`);
+    }
     try {
-      const refreshed = await refresher(data);
+      const refreshed = await refresher(data, appCreds);
       await client.query(
         "update credential set data_encrypted = $1, token_expires_at = $2, status = $3, updated_at = now() where name = $4",
         [encryptCredential(masterKey, name, refreshed.data), refreshed.expiresAt, "ok", name],
