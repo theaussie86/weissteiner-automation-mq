@@ -15,8 +15,11 @@ import { verifyTempUrl } from "../storage/temp-url.js";
 import {
   CREDENTIAL_NAME_PATTERN,
   deleteCredential,
+  deleteOAuthApp,
   listCredentials,
+  listOAuthApps,
   upsertCredential,
+  upsertOAuthApp,
 } from "../credentials/store.js";
 import { consumeState, createState } from "../credentials/state.js";
 import * as google from "../credentials/providers/google.js";
@@ -236,6 +239,41 @@ app.delete<{ Params: { name: string } }>("/admin/credentials/:name", async (requ
   if (!requireAdmin(request, reply)) return;
   const removed = await deleteCredential(db, request.params.name);
   if (!removed) return reply.code(404).send({ error: "Credential not found" });
+  return reply.code(204).send();
+});
+
+// OAuth-App-Verwaltung: Client-ID/Secret verschlüsselt im Store, mehrere Apps pro Provider.
+app.post<{ Body: { name: string; provider: string; clientId: string; clientSecret: string } }>(
+  "/admin/credentials/oauth-app",
+  async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    if (!config.CREDENTIAL_MASTER_KEY) return reply.code(503).send({ error: "Credential store not configured" });
+    const { name, provider, clientId, clientSecret } = request.body ?? {};
+    if (typeof name !== "string" || !CREDENTIAL_NAME_PATTERN.test(name)) {
+      return reply.code(422).send({ error: "Invalid name: lowercase letters, digits, hyphens, max 64 chars" });
+    }
+    if (provider !== "google" && provider !== "shopify") {
+      return reply.code(422).send({ error: "provider must be 'google' or 'shopify'" });
+    }
+    if (typeof clientId !== "string" || !clientId || typeof clientSecret !== "string" || !clientSecret) {
+      return reply.code(422).send({ error: "clientId and clientSecret required" });
+    }
+    const ok = await upsertOAuthApp(db, config.CREDENTIAL_MASTER_KEY, { name, provider, clientId, clientSecret });
+    if (!ok) return reply.code(409).send({ error: `Name already used by another provider: ${name}` });
+    return reply.code(201).send({ name, provider: `${provider}-app` });
+  },
+);
+
+app.get("/admin/credentials/oauth-app", async (request, reply) => {
+  if (!requireAdmin(request, reply)) return;
+  const apps = await listOAuthApps(db);
+  return { apps, count: apps.length };
+});
+
+app.delete<{ Params: { name: string } }>("/admin/credentials/oauth-app/:name", async (request, reply) => {
+  if (!requireAdmin(request, reply)) return;
+  const removed = await deleteOAuthApp(db, request.params.name);
+  if (!removed) return reply.code(404).send({ error: "OAuth app not found" });
   return reply.code(204).send();
 });
 
