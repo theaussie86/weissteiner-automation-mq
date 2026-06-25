@@ -27,6 +27,10 @@ Ein Container, der Jobs aus per Env-Var zugewiesenen Queues konsumiert. Queue-ag
 Ein mehrstufiger Ablauf aus verketteten Jobs (BullMQ Parent-Child). Ablöse-Ziel für n8n-Workflows.
 _Avoid_: Workflow (reserviert für n8n-Altbestand)
 
+**Schedule**:
+Ein wiederkehrender, cron- oder intervallgesteuerter Trigger, der automatisch einen Job eines bestimmten Job-Typs einreicht. Definition liegt als Source of Truth in Postgres, wird beim API-Boot idempotent in den BullMQ-Scheduler ge-upsertet.
+_Avoid_: Cron-Job (zweideutig mit internen Repeatables wie Cleanup), Trigger
+
 ### Zugriff & Ergebnis
 
 **Consumer**:
@@ -74,6 +78,7 @@ Der Zeitpunkt, ab dem ein Consumer (oder der letzte) vom Legacy-Dienst bzw. eine
 - Ein **Job-Typ** gehört zu genau einer **Queue**; ein **Worker** konsumiert eine oder mehrere **Queues**
 - Ein **Job** referenziert null bis n **Credentials** aus dem **Credential Store**
 - Ein **Flow** besteht aus mehreren verketteten **Jobs**
+- Ein **Schedule** reicht zeitgesteuert **Jobs** eines **Job-Typs** ein; er ersetzt externe Scheduler (pg_cron, Trigger.dev) und gehört einem **Consumer**
 - Jeder **Job** landet im **Job-Archiv**; Datei-Ergebnisse werden als **Temp-URL** ausgeliefert, optional zusätzlich per **Callback** gemeldet
 
 ## Example dialogue
