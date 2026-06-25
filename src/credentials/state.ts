@@ -7,6 +7,7 @@ const STATE_TTL_SECONDS = 600;
 export interface StatePayload {
   name: string;
   provider: "google" | "shopify";
+  app?: string;
   scopes?: string[];
   shop?: string;
 }
