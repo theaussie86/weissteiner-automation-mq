@@ -1,5 +1,5 @@
 // Pinfinity-Cleanup (Tracer der Pinfinity-Migration): löst die Edge Function
-// cleanup-published-images ab. Loescht Bild-Dateien laengst veroeffentlichter Pins
+// cleanup-published-images ab. Löscht Bild-Dateien längst veröffentlichter Pins
 // aus Pinfinitys Supabase Storage und nullt deren image_path.
 // Die Orchestrierung hier ist rein und gegen den CleanupClient-Seam testbar;
 // der Adapter auf das echte supabase-js folgt in derselben Datei (Task 3).
