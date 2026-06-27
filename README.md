@@ -60,7 +60,7 @@ curl "https://mq.weissteiner-automation.com/admin/jobs?tenant=wachmacherei&statu
 | `GET /admin/schedules` | Admin-Key | Schedules auflisten |
 | `DELETE /admin/schedules/:name` | Admin-Key | Schedule + BullMQ-Scheduler entfernen |
 
-**Job-Typen**: `integrations.ping` (Smoke-Test), `media.extract-audio` (MP3, Legacy-Defaults 128k/22.05kHz), `media.thumbnail` (JPEG/PNG-Frame). Registry: `src/jobs/`.
+**Job-Typen**: `integrations.ping` (Smoke-Test), `media.extract-audio` (MP3, Legacy-Defaults 128k/22.05kHz), `media.thumbnail` (JPEG/PNG-Frame), `pinfinity.cleanup-published-images` (löscht Bilder längst veröffentlichter Pins aus Pinfinitys Supabase Storage; Payload `{ supabaseCredential, dryRun? }`). Registry: `src/jobs/`.
 
 **Callbacks**: Worker POSTet nach completed/failed `{jobId, queue, type, status, tenant, result|error}` an die `callbackUrl` — HMAC-signiert im Header `X-MQ-Signature` (SHA-256 über den Raw-Body, Secret = `URL_SIGNING_SECRET`), 3 Versuche, nie Datei-Inhalte.
 
@@ -115,4 +115,4 @@ auf `reauth_required` - Connect-Flow erneut durchlaufen.
 
 ## Offen
 
-Nativer Scheduler steht (ADR-0008, `/admin/schedules`). Nächster Block: Pinfinity-Migration - Job-Typen `pinterest.publish-pin` (liest Token via Supabase-Service-Role, ADR-0009), `ai.generate-pin-metadata`, `scrape.blog-article` auf den Scheduler setzen · Schedule-Läufe ins Job-Archiv schreiben (aktuell archiviert nur `POST /jobs`) · Flows/FlowProducer erst beim ersten echten Fan-in-Fall · Staging-Environment bei Bedarf.
+Nativer Scheduler steht (ADR-0008, `/admin/schedules`). Pinfinity-Migration läuft: `pinfinity.cleanup-published-images` steht (erster Tracer). Betrieb: `pinfinity-supabase`-Credential (`POST /admin/credentials`, `{name, provider:"apikey", data:{url, serviceRoleKey}}`) und Schedule (`POST /admin/schedules`, `payload:{supabaseCredential, dryRun}`) anlegen, ersten Lauf mit `dryRun:true`, dann pg_cron in Pinfinitys Supabase abdrehen. Nächste Job-Typen: `ai.generate-pin-metadata`, `pinterest.publish-pin`. Weitere Blöcke: Schedule-Läufe ins Job-Archiv schreiben (aktuell archiviert nur `POST /jobs`) · Flows/FlowProducer erst beim ersten echten Fan-in-Fall · Staging-Environment bei Bedarf.
