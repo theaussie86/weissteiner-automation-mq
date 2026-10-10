@@ -15,6 +15,7 @@ import type { JobContext } from "../jobs/registry.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 import "../jobs/pinfinity/cleanup.js";
+import "../jobs/pinfinity/publish-pin.js";
 
 const config = loadConfig();
 const connection = createRedis(config.REDIS_URL);
