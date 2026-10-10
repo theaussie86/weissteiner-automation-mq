@@ -38,6 +38,22 @@ export async function archiveQueued(db: pg.Pool, entry: ArchiveEntry): Promise<v
   }
 }
 
+// Markiert einen wartenden/verzögerten Job als abgebrochen (DELETE /jobs, Ticket #7).
+// Nur Einträge im Status "queued" werden angefasst, damit ein bereits abgeschlossener
+// oder fehlgeschlagener Lauf nie überschrieben wird.
+export async function archiveCancelled(db: pg.Pool, queue: string, jobId: string): Promise<void> {
+  try {
+    await db.query(
+      `update job_archive
+       set status = 'cancelled', finished_at = now()
+       where queue = $1 and job_id = $2 and status = 'queued'`,
+      [queue, jobId],
+    );
+  } catch (err) {
+    console.error(JSON.stringify({ event: "archive.error", op: "cancelled", jobId, error: (err as Error).message }));
+  }
+}
+
 export async function archiveFinished(
   db: pg.Pool,
   queue: string,

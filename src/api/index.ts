@@ -9,8 +9,9 @@ import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { generateApiKey, hashApiKey, hasQueueScope, safeEqual, type Consumer } from "../auth.js";
-import { archiveQueued } from "../archive.js";
+import { archiveCancelled, archiveQueued } from "../archive.js";
 import { enqueueJob, parseJobOptions } from "../jobs/enqueue.js";
+import { handleRemoveJob } from "../jobs/remove.js";
 import { createVolumeStorage } from "../storage/index.js";
 import { verifyTempUrl } from "../storage/temp-url.js";
 import {
@@ -581,6 +582,19 @@ app.get<{ Params: { queue: string; id: string } }>("/jobs/:queue/:id", async (re
   }
   const state = await job.getState();
   return { id: job.id, name: job.name, state, returnvalue: job.returnvalue ?? null };
+});
+
+// DELETE /jobs/:jobId?queue=<name> (Ticket #7): bricht einen noch nicht laufenden Job ab.
+// Kein Body nötig — DELETE ohne content-type schlägt bei Fastify nicht fehl.
+app.delete<{ Params: { jobId: string }; Querystring: { queue?: string } }>("/jobs/:jobId", async (request, reply) => {
+  const result = await handleRemoveJob({
+    consumer: request.consumer!,
+    queue: request.query.queue ?? "",
+    jobId: request.params.jobId,
+    getQueue,
+    onRemoved: (queue, jobId) => archiveCancelled(db, queue, jobId),
+  });
+  return reply.code(result.status).send(result.body);
 });
 
 await app.listen({ port: config.PORT, host: "0.0.0.0" });

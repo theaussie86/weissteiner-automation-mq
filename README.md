@@ -53,6 +53,7 @@ curl "https://mq.weissteiner-automation.com/admin/jobs?tenant=wachmacherei&statu
 | `GET /health` | keine | Redis/Postgres-Check |
 | `POST /jobs` | API-Key | Job einreichen (`type`, `payload`, `tenant?`, `callbackUrl?`) |
 | `GET /jobs/:queue/:id` | API-Key + Scope | Status + Ergebnis |
+| `DELETE /jobs/:jobId?queue=<name>` | API-Key + Scope | Wartenden/verzögerten Job abbrechen (aktiv ⇒ 409) |
 | `GET /files/:key?exp&sig` | HMAC-Signatur | Temp-URL-Auslieferung (24h TTL) |
 | `POST /admin/consumers` | Admin-Key | Consumer anlegen, Key einmalig im Klartext |
 | `GET /admin/jobs` | Admin-Key | Archiv-Abfrage (tenant/consumer/type/status) |
