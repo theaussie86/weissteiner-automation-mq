@@ -1,8 +1,8 @@
 // Pinfinity-Cleanup (Tracer der Pinfinity-Migration): löst die Edge Function
 // cleanup-published-images ab. Löscht Bild-Dateien längst veröffentlichter Pins
 // aus Pinfinitys Supabase Storage und nullt deren image_path.
-// Die Orchestrierung hier ist rein und gegen den CleanupClient-Seam testbar;
-// der Adapter auf das echte supabase-js folgt in derselben Datei (Task 3).
+// Die Orchestrierung ist rein und gegen den CleanupClient-Seam testbar;
+// der Adapter auf das echte supabase-js liegt weiter unten in derselben Datei.
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
@@ -18,12 +18,14 @@ export interface CleanablePin {
   image_path: string;
 }
 
+export type StepResult = { error: string | null };
+
 // Schmaler Seam auf Pinfinitys Supabase: drei High-Level-Operationen statt der
 // fluent supabase-js-API, damit die Orchestrierung mit einem trivialen Fake testbar bleibt.
 export interface CleanupClient {
   listCleanablePins(olderThanDays: number, limit: number): Promise<CleanablePin[]>;
-  removeImages(bucket: string, paths: string[]): Promise<{ error: string | null }>;
-  nullImagePaths(ids: string[]): Promise<{ error: string | null }>;
+  removeImages(bucket: string, paths: string[]): Promise<StepResult>;
+  nullImagePaths(ids: string[]): Promise<StepResult>;
 }
 
 export interface CleanupResult {
@@ -42,20 +44,22 @@ export async function cleanupPublishedImages(
   if (total === 0) return { total: 0, cleaned: 0, failed: 0, dryRun: opts.dryRun };
   if (opts.dryRun) return { total, cleaned: 0, failed: 0, dryRun: true };
 
+  const allFailed: CleanupResult = { total, cleaned: 0, failed: total, dryRun: false };
+
   const removed = await client.removeImages(
     BUCKET,
     pins.map((p) => p.image_path),
   );
-  if (removed.error) return { total, cleaned: 0, failed: total, dryRun: false };
+  if (removed.error) return allFailed;
 
   const updated = await client.nullImagePaths(pins.map((p) => p.id));
-  if (updated.error) return { total, cleaned: 0, failed: total, dryRun: false };
+  if (updated.error) return allFailed;
 
   return { total, cleaned: total, failed: 0, dryRun: false };
 }
 
 // Adapter: erfüllt den CleanupClient-Seam mit den echten supabase-js-Calls.
-// Dünn gehalten und über das Live-E2E (Task 4) verifiziert, nicht per Unit-Test.
+// Dünn gehalten und über das Live-E2E verifiziert, nicht per Unit-Test.
 export function supabaseCleanupClient(sb: SupabaseClient): CleanupClient {
   return {
     async listCleanablePins(olderThanDays, limit) {
