@@ -1,4 +1,4 @@
-import { Queue, Worker } from "bullmq";
+import { DelayedError, Queue, Worker, type Job } from "bullmq";
 import pg from "pg";
 import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
@@ -56,8 +56,13 @@ function enqueueQueue(name: string): Queue {
 
 // Pro Job ein Kontext: ctx.enqueue erbt Consumer (sonst "system") und Tenant des
 // Ursprungsjobs. job.data fehlt bei Scheduler-Jobs — dann greift der Fallback.
-function jobContext(data: { consumer?: string; tenant?: string | null } | undefined): JobContext {
-  return {
+// deferrable (aktiver Job + Token) gibt es nur im Worker-Prozess, nicht in
+// onFinalFailure — nur dann kann sich der Job per moveToDelayed selbst verschieben.
+function jobContext(
+  data: { consumer?: string; tenant?: string | null } | undefined,
+  deferrable?: { job: Job; token: string | undefined },
+): JobContext {
+  const ctx: JobContext = {
     db,
     getCredential: getCredentialForJob,
     enqueue: createContextEnqueue({
@@ -65,7 +70,16 @@ function jobContext(data: { consumer?: string; tenant?: string | null } | undefi
       archive: (entry) => archiveQueued(db, entry),
       origin: { consumer: data?.consumer ?? "system", tenant: data?.tenant ?? null },
     }),
+    redis: connection,
   };
+  if (deferrable) {
+    ctx.defer = async (delayMs: number): Promise<never> => {
+      await deferrable.job.moveToDelayed(Date.now() + delayMs, deferrable.token);
+      // DelayedError signalisiert BullMQ: Job ist verschoben, kein fehlgeschlagener Versuch.
+      throw new DelayedError();
+    };
+  }
+  return ctx;
 }
 
 // Repeatable Cleanup (ADR-0004) — Upsert ist idempotent.
@@ -90,7 +104,7 @@ const workers = config.WORKER_QUEUES.map(
   (queueName) =>
     new Worker(
       queueName,
-      async (job) => {
+      async (job, token) => {
         const jobType = getJobType(job.name);
         if (!jobType) {
           throw new Error(`No processor registered for job type: ${job.name}`);
@@ -98,7 +112,7 @@ const workers = config.WORKER_QUEUES.map(
         // job.data = { payload, consumer } — Quelle ist Job-Attribut (ADR-0003).
         // Scheduler-Jobs (Cleanup) haben kein data — leeres Payload.
         const payload = jobType.payloadSchema.parse(job.data?.payload ?? {});
-        return jobType.process(payload, jobContext(job.data));
+        return jobType.process(payload, jobContext(job.data, { job, token }));
       },
       { connection, concurrency: queueName === "media" ? 1 : 5 },
     ),

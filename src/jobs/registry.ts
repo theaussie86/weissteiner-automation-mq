@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { JobsOptions } from "bullmq";
 import type pg from "pg";
+import type { Redis } from "ioredis";
 import type { ContextEnqueue } from "./enqueue.js";
 import type { FailableJob } from "../worker/failure.js";
 
@@ -18,6 +19,14 @@ export interface JobContext {
    * Archiv-Eintrag. Consumer/Tenant erbt der Folge-Job vom Ursprungsjob.
    */
   enqueue: ContextEnqueue;
+  /** Aktive Redis-Verbindung für Jobs, die selbst Redis brauchen (z.B. Rate-Limit-Marke). */
+  redis: Redis;
+  /**
+   * Verschiebt den laufenden Job um delayMs (BullMQ moveToDelayed + DelayedError), ohne
+   * einen Attempt zu verbrauchen (Ticket #13). Die Promise löst nie auf. Nur im
+   * Worker-Prozess gesetzt — in onFinalFailure fehlt der aktive Job, dann undefined.
+   */
+  defer?: (delayMs: number) => Promise<never>;
 }
 
 export interface JobType<P extends z.ZodTypeAny = z.ZodTypeAny> {

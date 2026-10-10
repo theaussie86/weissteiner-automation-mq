@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { UnrecoverableError } from "bullmq";
+import { DelayedError, UnrecoverableError } from "bullmq";
+import type { RateLimitContext } from "./rate-limit.js";
 import {
   buildAiDisclosures,
   handlePublishPinFinalFailure,
@@ -266,6 +267,53 @@ describe("publishPin Doppel-Post-Schutz", () => {
     const result = await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, noSleep);
     expect(result).toEqual({ published: true, pinterestPinId: "77" });
     expect(markPublished).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("publishPin Rate-Limit pro Connection (Ticket #13)", () => {
+  function fakeRateLimit(opts: { busy: boolean; remainingMs?: number }): {
+    rateLimit: RateLimitContext;
+    defer: ReturnType<typeof vi.fn>;
+    set: ReturnType<typeof vi.fn>;
+  } {
+    const set = vi.fn(async () => (opts.busy ? null : "OK"));
+    const defer = vi.fn(async (): Promise<never> => {
+      // Wie im Worker: verschobener Job wirft DelayedError (kein Attempt verbraucht).
+      throw new DelayedError();
+    });
+    const rateLimit: RateLimitContext = {
+      redis: { set, pttl: async () => opts.remainingMs ?? 4000 },
+      defer,
+      random: () => 0,
+    };
+    return { rateLimit, defer, set };
+  }
+
+  it("Marke frei => postet normal, Marke wird pro Connection belegt", async () => {
+    const { store, markPublished } = fakeStore(basePin({}));
+    const { client, createPin } = fakePinterest(async () => ({ id: "55" }));
+    const { rateLimit, defer, set } = fakeRateLimit({ busy: false });
+    const result = await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, rateLimit });
+
+    expect(result).toEqual({ published: true, pinterestPinId: "55" });
+    expect(set).toHaveBeenCalledWith("pinterest-rl-conn-7", "1", "PX", 10_000, "NX");
+    expect(defer).not.toHaveBeenCalled();
+    expect(createPin).toHaveBeenCalledTimes(1);
+    expect(markPublished).toHaveBeenCalledTimes(1);
+  });
+
+  it("Marke belegt => Job verschiebt sich (DelayedError), postet nicht", async () => {
+    const { store, markPublished } = fakeStore(basePin({}));
+    const { client, createPin } = fakePinterest(async () => ({ id: "55" }));
+    const { rateLimit, defer } = fakeRateLimit({ busy: true, remainingMs: 7000 });
+    const err = await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, rateLimit }).catch(
+      (e) => e,
+    );
+
+    expect(err).toBeInstanceOf(DelayedError);
+    expect(defer).toHaveBeenCalledWith(7000);
+    expect(createPin).not.toHaveBeenCalled();
+    expect(markPublished).not.toHaveBeenCalled();
   });
 });
 

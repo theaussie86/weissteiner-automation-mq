@@ -18,6 +18,7 @@ import {
   type PinterestCreatePinPayload,
 } from "../../integrations/pinterest.js";
 import type { ContextEnqueue } from "../enqueue.js";
+import { enforcePinterestRateLimit, type RateLimitContext } from "./rate-limit.js";
 
 const BUCKET = "pin-images";
 const TITLE_MAX = 100;
@@ -89,6 +90,11 @@ export function buildAiDisclosures(
 export interface PublishPinOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Rate-Limit pro Pinterest-Connection (Ticket #13). Fehlt es, wird nicht gebremst
+   * (z.B. in Unit-Tests). Der Worker setzt es aus Redis und dem laufenden BullMQ-Job.
+   */
+  rateLimit?: RateLimitContext;
 }
 
 export type PublishPinResult = { skipped: string } | { published: true; pinterestPinId: string };
@@ -133,6 +139,13 @@ export async function publishPin(
   if (link) pinPayload.link = link;
   const aiDisclosures = buildAiDisclosures(pin.ai_modified ?? true, pin.synthetic_performer ?? false);
   if (aiDisclosures) pinPayload.ai_disclosures = aiDisclosures;
+
+  // Mindestabstand pro Connection direkt vor dem Pinterest-POST (Ticket #13). Ist die
+  // Marke belegt, verschiebt sich der Job selbst (kein Attempt verbraucht) und kehrt
+  // hier nicht zurück — createPin läuft erst, wenn die Connection wieder frei ist.
+  if (pin.connection_id && options.rateLimit) {
+    await enforcePinterestRateLimit(options.rateLimit, pin.connection_id);
+  }
 
   let created: { id: string };
   try {
@@ -291,7 +304,9 @@ registerJobType({
     const creds = await ctx.getCredential(payload.supabaseCredential);
     const sb = createSupabaseClient(creds);
     const store = supabasePinStore(sb, creds.url as string);
-    return publishPin(store, createPinterestClient(), { pinId: payload.pinId, scheduledAt: payload.scheduledAt });
+    // defer gibt es nur im Worker-Prozess (nicht in onFinalFailure) => Rate-Limit aktiv.
+    const options: PublishPinOptions = ctx.defer ? { rateLimit: { redis: ctx.redis, defer: ctx.defer } } : {};
+    return publishPin(store, createPinterestClient(), { pinId: payload.pinId, scheduledAt: payload.scheduledAt }, options);
   },
   onFinalFailure: async (payload, error, ctx, job) => {
     const creds = await ctx.getCredential(payload.supabaseCredential);
