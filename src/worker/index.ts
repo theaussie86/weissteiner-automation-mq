@@ -18,6 +18,7 @@ import "../jobs/pinfinity/cleanup.js";
 import "../jobs/pinfinity/publish-pin.js";
 import "../jobs/pinfinity/send-publish-error-mail.js";
 import "../jobs/pinfinity/reconcile-publish-jobs.js";
+import "../jobs/pinfinity/cleanup-publish-events.js";
 
 const config = loadConfig();
 const connection = createRedis(config.REDIS_URL);
@@ -78,6 +79,12 @@ function jobContext(
       // DelayedError signalisiert BullMQ: Job ist verschoben, kein fehlgeschlagener Versuch.
       throw new DelayedError();
     };
+    // Versuchszähler für Ereignis-Logs (Ticket #19). attemptsMade ist während des Laufs
+    // noch nicht hochgezählt, der laufende Versuch ist also attemptsMade + 1.
+    ctx.attempt = deferrable.job.attemptsMade + 1;
+    ctx.maxAttempts = deferrable.job.opts.attempts ?? 1;
+    // Job-Id für Ereignis-Details (z.B. mail_sent.details.job_id, Ticket #20).
+    if (deferrable.job.id) ctx.jobId = deferrable.job.id;
   }
   return ctx;
 }
@@ -143,9 +150,12 @@ function notifyCallback(
   });
 }
 
-// Baut die onFinalFailure-Closure für den failed-Handler (Ticket #9) oder undefined,
-// wenn der Job-Typ keinen Hook hat. handleFailed ruft sie nur beim letzten Versuch.
-function finalFailureHook(
+// Baut die Closure für einen der Fehler-Hooks des Job-Typs (onFinalFailure, Ticket #9,
+// oder onRetryScheduled, Ticket #19) für den failed-Handler oder undefined, wenn der
+// Job-Typ den Hook nicht hat. handleFailed ruft onFinalFailure nur beim letzten,
+// onRetryScheduled nur bei einem Zwischenversuch auf.
+function jobTypeHook(
+  event: "onFinalFailure" | "onRetryScheduled",
   queue: string,
   job:
     | { id?: string; name: string; data?: { consumer?: string; tenant?: string | null; payload?: unknown } }
@@ -154,13 +164,13 @@ function finalFailureHook(
 ): (() => void | Promise<void>) | undefined {
   if (!job) return undefined;
   const jobType = getJobType(job.name);
-  if (!jobType?.onFinalFailure) return undefined;
+  const hook = jobType?.[event];
+  if (!hook) return undefined;
   const parsed = jobType.payloadSchema.safeParse(job.data?.payload ?? {});
   if (!parsed.success) {
-    console.error(JSON.stringify({ event: "onFinalFailure.error", queue, jobId: job.id, type: job.name, error: "invalid payload" }));
+    console.error(JSON.stringify({ event: `${event}.error`, queue, jobId: job.id, type: job.name, error: "invalid payload" }));
     return undefined;
   }
-  const hook = jobType.onFinalFailure;
   return () => hook(parsed.data, err, jobContext(job.data), job as FailableJob);
 }
 
@@ -180,7 +190,8 @@ for (const worker of workers) {
       notifyFailed: (error) => {
         if (job) notifyCallback(worker.name, job, { status: "failed", error });
       },
-      onFinalFailure: finalFailureHook(worker.name, job, err),
+      onFinalFailure: jobTypeHook("onFinalFailure", worker.name, job, err),
+      onRetryScheduled: jobTypeHook("onRetryScheduled", worker.name, job, err),
     });
   });
 }

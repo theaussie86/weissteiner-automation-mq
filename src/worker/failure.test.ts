@@ -117,4 +117,36 @@ describe("handleFailed", () => {
       .find((l) => l.event === "onFinalFailure.error");
     expect(errLine).toMatchObject({ event: "onFinalFailure.error", error: "async kaputt" });
   });
+
+  it("ruft den onRetryScheduled-Hook bei einem Zwischenversuch auf, onFinalFailure nicht", () => {
+    const onRetryScheduled = vi.fn();
+    const onFinalFailure = vi.fn();
+    handleFailed(job(1, 4), new Error("boom"), { ...deps(), onRetryScheduled, onFinalFailure });
+    expect(onRetryScheduled).toHaveBeenCalledTimes(1);
+    expect(onFinalFailure).not.toHaveBeenCalled();
+  });
+
+  it("ruft den onRetryScheduled-Hook beim endgültigen Scheitern nicht auf", () => {
+    const onRetryScheduled = vi.fn();
+    handleFailed(job(4, 4), new Error("boom"), { ...deps(), onRetryScheduled });
+    expect(onRetryScheduled).not.toHaveBeenCalled();
+  });
+
+  it("ruft onRetryScheduled bei UnrecoverableError (immer final) nicht auf", () => {
+    const onRetryScheduled = vi.fn();
+    handleFailed(job(1, 4), new UnrecoverableError("nope"), { ...deps(), onRetryScheduled });
+    expect(onRetryScheduled).not.toHaveBeenCalled();
+  });
+
+  it("schluckt Hook-Fehler aus onRetryScheduled und loggt onRetryScheduled.error", () => {
+    const d = deps();
+    const onRetryScheduled = vi.fn(() => {
+      throw new Error("retry hook kaputt");
+    });
+    expect(() => handleFailed(job(1, 4), new Error("boom"), { ...d, onRetryScheduled })).not.toThrow();
+    const errLine = d.log.mock.calls
+      .map((c) => JSON.parse(c[0] as string))
+      .find((l) => l.event === "onRetryScheduled.error");
+    expect(errLine).toMatchObject({ event: "onRetryScheduled.error", jobId: "j1", error: "retry hook kaputt" });
+  });
 });

@@ -27,6 +27,19 @@ export interface JobContext {
    * Worker-Prozess gesetzt — in onFinalFailure fehlt der aktive Job, dann undefined.
    */
   defer?: (delayMs: number) => Promise<never>;
+  /**
+   * Nummer des laufenden Versuchs (1-basiert) und Max-Versuche des Jobs (Ticket #19).
+   * Nur im Worker-Prozess gesetzt (process), nicht in den Fehler-Hooks — dort liefert
+   * der übergebene Job diese Werte.
+   */
+  attempt?: number;
+  maxAttempts?: number;
+  /**
+   * Id des laufenden Jobs, für Ereignis-Details wie details.job_id (Ticket #20). Nur im
+   * Worker-Prozess gesetzt (process), nicht in den Fehler-Hooks — dort liefert der
+   * übergebene Job diesen Wert.
+   */
+  jobId?: string;
 }
 
 export interface JobType<P extends z.ZodTypeAny = z.ZodTypeAny> {
@@ -45,6 +58,14 @@ export interface JobType<P extends z.ZodTypeAny = z.ZodTypeAny> {
    * setzen und per ctx.enqueue eine Fehler-Mail als Folge-Job einreihen.
    */
   onFinalFailure?: (payload: z.infer<P>, error: Error, ctx: JobContext, job: FailableJob) => void | Promise<void>;
+  /**
+   * Hook auf einen fehlgeschlagenen Versuch, dem noch ein Retry folgt (Ticket #19). Ruft
+   * der Worker im failed-Handler nur bei einem Zwischenfehler auf (nicht final), analog zu
+   * onFinalFailure. Fehler im Hook werden geloggt (event: "onRetryScheduled.error") und
+   * dürfen den bereits eingeplanten Retry nicht verhindern. Typisch: ein retry_scheduled-
+   * Ereignis schreiben.
+   */
+  onRetryScheduled?: (payload: z.infer<P>, error: Error, ctx: JobContext, job: FailableJob) => void | Promise<void>;
 }
 
 const registry = new Map<string, JobType>();

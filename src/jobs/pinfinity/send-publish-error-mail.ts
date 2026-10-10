@@ -12,6 +12,7 @@ import { UnrecoverableError } from "bullmq";
 import { z } from "zod";
 import { registerJobType } from "../registry.js";
 import { createSupabaseClient } from "../../integrations/supabase.js";
+import { recordPublishEvent, supabasePublishEventStore, type PublishEventStore } from "./publish-events.js";
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const DEFAULT_FROM = "Pinfinity <noreply@onlineheldinnen.de>";
@@ -133,8 +134,22 @@ export interface SendErrorMailInput {
   appUrl: string;
 }
 
+export interface ErrorMailEventContext {
+  store: PublishEventStore;
+  /** Id des laufenden Mail-Jobs, für details.job_id. Null, wenn unbekannt. */
+  jobId: string | null;
+}
+
 export interface SendErrorMailOptions {
   now?: () => Date;
+  /**
+   * Schreibt das Ereignis mail_sent nach pin_publish_events (Ticket #20). Fehlt es
+   * (z.B. in reinen Logik-Tests), wird kein Ereignis geschrieben. Der Worker setzt es
+   * mit dem supabase-js-Adapter und der Id des laufenden Jobs.
+   */
+  events?: ErrorMailEventContext;
+  /** Log-Senke für den Best-Effort-Schreibfehler (recordPublishEvent). */
+  log?: (line: string) => void;
 }
 
 export type SendErrorMailResult = { skipped: string } | { sent: true; recipient: string };
@@ -189,6 +204,27 @@ export async function sendPublishErrorMail(
   // Throttle setzen. Der Trigger reset_error_notified_at setzt es zurück, sobald der Pin
   // error verlässt (siehe Ticket).
   await store.markNotified(pin.id, now().toISOString());
+
+  // mail_sent nur nach erfolgreichem Versand (Ticket #20): attempt/maxAttempts bleiben
+  // leer. Übersprungene Mails kommen hier nicht an; ein endgültig gescheiterter Versand
+  // schreibt kein eigenes Ereignis (die Mail ist nur Folge des failed_final). Best-Effort:
+  // recordPublishEvent wirft nie, ein Log-Fehler lässt den Versand unberührt.
+  if (options.events) {
+    await recordPublishEvent(
+      options.events.store,
+      {
+        pinId: pin.id,
+        blogProjectId: pin.blog_project_id ?? "",
+        type: "mail_sent",
+        details: {
+          recipient,
+          ...(options.events.jobId ? { job_id: options.events.jobId } : {}),
+        },
+      },
+      options.log,
+    );
+  }
+
   return { sent: true, recipient };
 }
 
@@ -309,11 +345,21 @@ registerJobType({
     const resend = resendCredentialSchema.parse(await ctx.getCredential(payload.resendCredential));
     const store = supabaseErrorMailStore(sb);
     const mailer = createResendMailer(resend.apiKey);
-    return sendPublishErrorMail(store, mailer, {
-      pinId: payload.pinId,
-      errorMessage: payload.errorMessage,
-      from: resend.from,
-      appUrl: resend.appUrl,
-    });
+    const options: SendErrorMailOptions = {};
+    // Nur im Worker-Prozess ist jobId gesetzt => mail_sent schreiben (Ticket #20).
+    if (ctx.jobId) {
+      options.events = { store: supabasePublishEventStore(sb), jobId: ctx.jobId };
+    }
+    return sendPublishErrorMail(
+      store,
+      mailer,
+      {
+        pinId: payload.pinId,
+        errorMessage: payload.errorMessage,
+        from: resend.from,
+        appUrl: resend.appUrl,
+      },
+      options,
+    );
   },
 });

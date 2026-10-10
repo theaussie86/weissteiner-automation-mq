@@ -3,12 +3,16 @@ import { DelayedError, UnrecoverableError } from "bullmq";
 import type { RateLimitContext } from "./rate-limit.js";
 import {
   buildAiDisclosures,
+  computeNextRetryAt,
   handlePublishPinFinalFailure,
+  handlePublishPinRetryScheduled,
   publishPin,
   type PinStore,
   type PublishablePin,
   type PublishPinPayload,
 } from "./publish-pin.js";
+import type { FailableJob } from "../../worker/failure.js";
+import type { PublishEventRow, PublishEventStore } from "./publish-events.js";
 import {
   PinterestApiError,
   type PinterestClient,
@@ -21,6 +25,7 @@ const SCHEDULED_AT = "2026-10-10T12:00:00.000Z";
 function basePin(overrides: Partial<PublishablePin> = {}): PublishablePin {
   return {
     id: "pin-1",
+    blog_project_id: "proj-1",
     status: "metadata_created",
     scheduled_at: SCHEDULED_AT,
     pinterest_pin_id: null,
@@ -91,6 +96,23 @@ function fakePinterest(behaviour: () => Promise<{ id: string }>): {
 }
 
 const noSleep = { sleep: async () => {}, now: () => new Date(SCHEDULED_AT) };
+
+// Sammelt alle geschriebenen Ereignisse in Reihenfolge (ein Fake teilbar über mehrere
+// publishPin-/Hook-Aufrufe hinweg, um Ereignisfolgen zu prüfen).
+function fakeEventStore(): { store: PublishEventStore; rows: PublishEventRow[] } {
+  const rows: PublishEventRow[] = [];
+  return { store: { insertEvent: async (row) => void rows.push(row) }, rows };
+}
+
+function failJob(attemptsMade: number, overrides: Partial<FailableJob> = {}): FailableJob {
+  return {
+    id: "publish-pin-pin-1",
+    name: "pinfinity.publish-pin",
+    attemptsMade,
+    opts: { attempts: 4, backoff: { type: "exponential", delay: 300_000 } },
+    ...overrides,
+  };
+}
 
 describe("publishPin stale-guard", () => {
   it("pin fehlt => skipped", async () => {
@@ -509,8 +531,9 @@ describe("handlePublishPinFinalFailure", () => {
 
   it("setzt Pin auf error und reiht die Mail ein", async () => {
     const { store, markErrorIfPending } = fakeStore(basePin({}));
+    const { store: events } = fakeEventStore();
     const enqueue = vi.fn(async () => ({ outcome: "enqueued" as const, job: { getState: async () => "waiting", remove: async () => {} } }));
-    await handlePublishPinFinalFailure(store, payload, new Error("kaputt"), enqueue, "job-42");
+    await handlePublishPinFinalFailure(store, events, payload, new Error("kaputt"), enqueue, failJob(4, { id: "job-42" }));
 
     expect(markErrorIfPending).toHaveBeenCalledWith("pin-1", "kaputt");
     expect(enqueue).toHaveBeenCalledWith(
@@ -518,6 +541,185 @@ describe("handlePublishPinFinalFailure", () => {
       { supabaseCredential: "pinfinity-supabase", resendCredential: "pinfinity-resend", pinId: "pin-1", errorMessage: "kaputt" },
       { jobId: "publish-error-mail-pin-1-job-42" },
     );
+  });
+
+  it("schreibt failed_final mit error_class retryable bei erschöpften Retries", async () => {
+    const { store } = fakeStore(basePin({}));
+    const { store: events, rows } = fakeEventStore();
+    const enqueue = vi.fn(async () => ({ outcome: "enqueued" as const, job: { getState: async () => "waiting", remove: async () => {} } }));
+    await handlePublishPinFinalFailure(store, events, payload, new PinterestApiError(503, "down"), enqueue, failJob(4));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      pin_id: "pin-1",
+      blog_project_id: "proj-1",
+      event_type: "failed_final",
+      attempt: 4,
+      max_attempts: 4,
+      details: { error_class: "retryable", http_status: 503 },
+    });
+  });
+
+  it("schreibt failed_final mit error_class unrecoverable bei UnrecoverableError", async () => {
+    const { store } = fakeStore(basePin({}));
+    const { store: events, rows } = fakeEventStore();
+    const enqueue = vi.fn(async () => ({ outcome: "enqueued" as const, job: { getState: async () => "waiting", remove: async () => {} } }));
+    await handlePublishPinFinalFailure(store, events, payload, new UnrecoverableError("kein Board"), enqueue, failJob(1));
+
+    expect(rows[0]).toMatchObject({ event_type: "failed_final", attempt: 1, details: { error_class: "unrecoverable" } });
+    expect(rows[0]!.details.http_status).toBeUndefined();
+  });
+
+  it("loadPin-Fehler blockiert weder Mail noch failed_final (blog_project_id leer)", async () => {
+    const { store, markErrorIfPending } = fakeStore(basePin({}));
+    store.loadPin = async () => {
+      throw new Error("db down");
+    };
+    const { store: events, rows } = fakeEventStore();
+    const enqueue = vi.fn(async () => ({ outcome: "enqueued" as const, job: { getState: async () => "waiting", remove: async () => {} } }));
+    await handlePublishPinFinalFailure(store, events, payload, new Error("kaputt"), enqueue, failJob(4));
+
+    expect(markErrorIfPending).toHaveBeenCalledOnce();
+    expect(enqueue).toHaveBeenCalledOnce();
+    expect(rows[0]).toMatchObject({ event_type: "failed_final", blog_project_id: "" });
+  });
+});
+
+describe("publishPin Ereignisse (Ticket #19)", () => {
+  const events = (store: PublishEventStore, attempt = 1, maxAttempts = 4) => ({ events: { store, attempt, maxAttempts } });
+
+  it("Erfolg im ersten Versuch: attempt_started dann succeeded", async () => {
+    const { store } = fakeStore(basePin({}));
+    const { client } = fakePinterest(async () => ({ id: "99" }));
+    const { store: ev, rows } = fakeEventStore();
+    await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, ...events(ev, 1, 4) });
+
+    expect(rows.map((r) => r.event_type)).toEqual(["attempt_started", "succeeded"]);
+    expect(rows[0]).toMatchObject({ pin_id: "pin-1", blog_project_id: "proj-1", attempt: 1, max_attempts: 4 });
+    expect(rows[1]).toMatchObject({ event_type: "succeeded", attempt: 1, details: { pinterest_pin_id: "99" } });
+  });
+
+  it("Stale-Skip schreibt nichts", async () => {
+    const { store } = fakeStore(basePin({ status: "published" }));
+    const { client } = fakePinterest(async () => ({ id: "x" }));
+    const { store: ev, rows } = fakeEventStore();
+    await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, ...events(ev) });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("Rate-Limit-Verschiebung erzeugt kein attempt_started", async () => {
+    const { store } = fakeStore(basePin({}));
+    const { client } = fakePinterest(async () => ({ id: "x" }));
+    const { store: ev, rows } = fakeEventStore();
+    const defer = vi.fn(async (): Promise<never> => {
+      throw new DelayedError();
+    });
+    const rateLimit: RateLimitContext = { redis: { set: async () => null, pttl: async () => 5000 }, defer, random: () => 0 };
+    await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, rateLimit, ...events(ev) }).catch(
+      () => {},
+    );
+    expect(defer).toHaveBeenCalled();
+    expect(rows).toHaveLength(0);
+  });
+
+  it("Unrecoverable-Fehler vor dem Versuch (fehlendes Board) schreibt kein succeeded", async () => {
+    const { store } = fakeStore(basePin({ pinterest_board_id: null }));
+    const { client } = fakePinterest(async () => ({ id: "x" }));
+    const { store: ev, rows } = fakeEventStore();
+    await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, ...events(ev) }).catch(() => {});
+    expect(rows.map((r) => r.event_type)).not.toContain("succeeded");
+  });
+
+  it("zwei Retries dann Erfolg: vollständige Ereignisfolge", async () => {
+    const { store: ev, rows } = fakeEventStore();
+    const payload = { pinId: "pin-1", scheduledAt: SCHEDULED_AT } as const;
+
+    // Versuch 1 (attemptsMade 0 => attempt 1): 503 => Retry.
+    const r1 = fakeStore(basePin({}));
+    const c1 = fakePinterest(async () => {
+      throw new PinterestApiError(503, "down");
+    });
+    const e1 = await publishPin(r1.store, c1.client, payload, { ...noSleep, ...events(ev, 1, 4) }).catch((e) => e);
+    expect(e1).toBeInstanceOf(PinterestApiError);
+    await handlePublishPinRetryScheduled(r1.store, ev, { ...payload, supabaseCredential: "c", resendCredential: "r" }, e1, failJob(1), () => new Date(SCHEDULED_AT));
+
+    // Versuch 2 (attempt 2): 429 => Retry.
+    const r2 = fakeStore(basePin({}));
+    const c2 = fakePinterest(async () => {
+      throw new PinterestApiError(429, "rate");
+    });
+    const e2 = await publishPin(r2.store, c2.client, payload, { ...noSleep, ...events(ev, 2, 4) }).catch((e) => e);
+    await handlePublishPinRetryScheduled(r2.store, ev, { ...payload, supabaseCredential: "c", resendCredential: "r" }, e2, failJob(2), () => new Date(SCHEDULED_AT));
+
+    // Versuch 3 (attempt 3): Erfolg.
+    const r3 = fakeStore(basePin({}));
+    const c3 = fakePinterest(async () => ({ id: "77" }));
+    await publishPin(r3.store, c3.client, payload, { ...noSleep, ...events(ev, 3, 4) });
+
+    expect(rows.map((r) => r.event_type)).toEqual([
+      "attempt_started",
+      "retry_scheduled",
+      "attempt_started",
+      "retry_scheduled",
+      "attempt_started",
+      "succeeded",
+    ]);
+    expect(rows.map((r) => r.attempt)).toEqual([1, 1, 2, 2, 3, 3]);
+  });
+});
+
+describe("handlePublishPinRetryScheduled", () => {
+  const payload: PublishPinPayload = {
+    supabaseCredential: "pinfinity-supabase",
+    pinId: "pin-1",
+    scheduledAt: SCHEDULED_AT,
+    resendCredential: "pinfinity-resend",
+  };
+
+  it("schreibt retry_scheduled mit error_class, http_status und next_retry_at", async () => {
+    const { store } = fakeStore(basePin({}));
+    const { store: ev, rows } = fakeEventStore();
+    await handlePublishPinRetryScheduled(store, ev, payload, new PinterestApiError(429, "rate"), failJob(1), () => new Date(SCHEDULED_AT));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      pin_id: "pin-1",
+      blog_project_id: "proj-1",
+      event_type: "retry_scheduled",
+      attempt: 1,
+      max_attempts: 4,
+      details: { error_class: "retryable", http_status: 429, next_retry_at: "2026-10-10T12:05:00.000Z" },
+    });
+  });
+
+  it("ohne HTTP-Status (Netzwerkfehler) kein http_status-Feld", async () => {
+    const { store } = fakeStore(basePin({}));
+    const { store: ev, rows } = fakeEventStore();
+    await handlePublishPinRetryScheduled(store, ev, payload, new TypeError("fetch failed"), failJob(2), () => new Date(SCHEDULED_AT));
+    expect(rows[0]!.details.http_status).toBeUndefined();
+    // attemptsMade 2 => +10 min.
+    expect(rows[0]!.details.next_retry_at).toBe("2026-10-10T12:10:00.000Z");
+  });
+});
+
+describe("computeNextRetryAt", () => {
+  const base = new Date("2026-10-10T12:00:00.000Z");
+
+  it("exponentiell: delay * 2^(attemptsMade-1)", () => {
+    const exp = { type: "exponential", delay: 300_000 };
+    expect(computeNextRetryAt(exp, 1, base)).toBe("2026-10-10T12:05:00.000Z");
+    expect(computeNextRetryAt(exp, 2, base)).toBe("2026-10-10T12:10:00.000Z");
+    expect(computeNextRetryAt(exp, 3, base)).toBe("2026-10-10T12:20:00.000Z");
+  });
+
+  it("fixed und Zahl-Backoff: immer delay", () => {
+    expect(computeNextRetryAt({ type: "fixed", delay: 60_000 }, 3, base)).toBe("2026-10-10T12:01:00.000Z");
+    expect(computeNextRetryAt(60_000, 5, base)).toBe("2026-10-10T12:01:00.000Z");
+  });
+
+  it("ohne Backoff/Delay null", () => {
+    expect(computeNextRetryAt(undefined, 1, base)).toBeNull();
+    expect(computeNextRetryAt({ type: "exponential" }, 1, base)).toBeNull();
   });
 });
 
