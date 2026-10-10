@@ -34,6 +34,12 @@ export interface JobContext {
    */
   attempt?: number;
   maxAttempts?: number;
+  /**
+   * Id des laufenden Jobs, für Ereignis-Details wie details.job_id (Ticket #20). Nur im
+   * Worker-Prozess gesetzt (process), nicht in den Fehler-Hooks — dort liefert der
+   * übergebene Job diesen Wert.
+   */
+  jobId?: string;
 }
 
 export interface JobType<P extends z.ZodTypeAny = z.ZodTypeAny> {

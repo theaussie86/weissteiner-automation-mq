@@ -10,6 +10,7 @@ import {
   type Mailer,
   type ProjectInfo,
 } from "./send-publish-error-mail.js";
+import type { PublishEventRow, PublishEventStore } from "./publish-events.js";
 
 const NOW = "2026-10-10T12:00:00.000Z";
 const noNow = { now: () => new Date(NOW) };
@@ -197,6 +198,98 @@ describe("sendPublishErrorMail Erfolgspfad", () => {
     const err = await sendPublishErrorMail(store, mailer, input, noNow).catch((e) => e);
     expect(err).toBeInstanceOf(UnrecoverableError);
     expect(loadProject).not.toHaveBeenCalled();
+  });
+});
+
+function fakeEventStore(behaviour?: () => Promise<void>): {
+  store: PublishEventStore;
+  insertEvent: ReturnType<typeof vi.fn>;
+  rows: PublishEventRow[];
+} {
+  const rows: PublishEventRow[] = [];
+  const insertEvent = vi.fn(async (row: PublishEventRow) => {
+    if (behaviour) await behaviour();
+    rows.push(row);
+  });
+  return { store: { insertEvent }, insertEvent, rows };
+}
+
+describe("sendPublishErrorMail Ereignis mail_sent", () => {
+  it("schreibt mail_sent nach erfolgreichem Versand", async () => {
+    const { store } = fakeStore(basePin(), { project: baseProject() });
+    const { mailer } = fakeMailer();
+    const events = fakeEventStore();
+    const result = await sendPublishErrorMail(store, mailer, input, {
+      ...noNow,
+      events: { store: events.store, jobId: "mail-job-7" },
+    });
+    expect(result).toEqual({ sent: true, recipient: "team@example.com" });
+    expect(events.insertEvent).toHaveBeenCalledTimes(1);
+    expect(events.rows[0]).toEqual({
+      pin_id: "pin-1",
+      blog_project_id: "proj-1",
+      event_type: "mail_sent",
+      attempt: null,
+      max_attempts: null,
+      message: null,
+      details: { recipient: "team@example.com", job_id: "mail-job-7" },
+    });
+  });
+
+  it("ohne jobId bleibt job_id aus den Details", async () => {
+    const { store } = fakeStore(basePin(), { project: baseProject() });
+    const { mailer } = fakeMailer();
+    const events = fakeEventStore();
+    await sendPublishErrorMail(store, mailer, input, {
+      ...noNow,
+      events: { store: events.store, jobId: null },
+    });
+    expect(events.rows[0].details).toEqual({ recipient: "team@example.com" });
+  });
+
+  it.each([
+    ["Pin fehlt", null, {}],
+    ["status != error", basePin({ status: "published" }), {}],
+    ["bereits benachrichtigt", basePin({ error_notified_at: NOW }), {}],
+  ])("übersprungene Mail (%s) schreibt kein Ereignis", async (_label, pin, opts) => {
+    const { store } = fakeStore(pin as ErrorPin | null, opts);
+    const { mailer } = fakeMailer();
+    const events = fakeEventStore();
+    const result = await sendPublishErrorMail(store, mailer, input, {
+      ...noNow,
+      events: { store: events.store, jobId: "mail-job-7" },
+    });
+    expect(result).toHaveProperty("skipped");
+    expect(events.insertEvent).not.toHaveBeenCalled();
+  });
+
+  it("gescheiterter Versand schreibt kein Ereignis", async () => {
+    const { store } = fakeStore(basePin(), { project: baseProject() });
+    const { mailer } = fakeMailer(async () => {
+      throw new ResendApiError(500, "boom");
+    });
+    const events = fakeEventStore();
+    await sendPublishErrorMail(store, mailer, input, {
+      ...noNow,
+      events: { store: events.store, jobId: "mail-job-7" },
+    }).catch(() => {});
+    expect(events.insertEvent).not.toHaveBeenCalled();
+  });
+
+  it("Schreibfehler des Logs beeinflusst den Versand nicht", async () => {
+    const { store, markNotified } = fakeStore(basePin(), { project: baseProject() });
+    const { mailer, send } = fakeMailer();
+    const events = fakeEventStore(async () => {
+      throw new Error("pin_publish_events down");
+    });
+    const result = await sendPublishErrorMail(store, mailer, input, {
+      ...noNow,
+      events: { store: events.store, jobId: "mail-job-7" },
+      log: () => {},
+    });
+    expect(result).toEqual({ sent: true, recipient: "team@example.com" });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(markNotified).toHaveBeenCalledWith("pin-1", NOW);
   });
 });
 

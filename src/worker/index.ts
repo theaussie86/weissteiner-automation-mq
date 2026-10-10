@@ -82,6 +82,8 @@ function jobContext(
     // noch nicht hochgezählt, der laufende Versuch ist also attemptsMade + 1.
     ctx.attempt = deferrable.job.attemptsMade + 1;
     ctx.maxAttempts = deferrable.job.opts.attempts ?? 1;
+    // Job-Id für Ereignis-Details (z.B. mail_sent.details.job_id, Ticket #20).
+    if (deferrable.job.id) ctx.jobId = deferrable.job.id;
   }
   return ctx;
 }
