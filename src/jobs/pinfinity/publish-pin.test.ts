@@ -1,3 +1,4 @@
+import { withActionHint } from "./publish-error-hint.js";
 import { describe, expect, it, vi } from "vitest";
 import { DelayedError, UnrecoverableError } from "bullmq";
 import type { RateLimitContext } from "./rate-limit.js";
@@ -533,10 +534,12 @@ describe("handlePublishPinFinalFailure", () => {
     const enqueue = vi.fn(async () => ({ outcome: "enqueued" as const, job: { getState: async () => "waiting", remove: async () => {} } }));
     await handlePublishPinFinalFailure(store, events, payload, new Error("kaputt"), enqueue, failJob(4, { id: "job-42" }));
 
-    expect(markErrorIfPending).toHaveBeenCalledWith("pin-1", "kaputt");
+    const uiMessage = withActionHint("kaputt");
+    expect(uiMessage).toContain("kaputt - Was tun: ");
+    expect(markErrorIfPending).toHaveBeenCalledWith("pin-1", uiMessage);
     expect(enqueue).toHaveBeenCalledWith(
       "pinfinity.send-publish-error-mail",
-      { supabaseCredential: "pinfinity-supabase", resendCredential: "pinfinity-resend", pinId: "pin-1", errorMessage: "kaputt" },
+      { supabaseCredential: "pinfinity-supabase", resendCredential: "pinfinity-resend", pinId: "pin-1", errorMessage: uiMessage },
       { jobId: "publish-error-mail-pin-1-job-42" },
     );
   });

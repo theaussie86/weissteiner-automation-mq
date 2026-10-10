@@ -7,6 +7,7 @@
 // PinterestClient, downloadVideo); die Adapter auf supabase-js und fetch liegen weiter
 // unten bzw. in src/integrations/pinterest.ts. Struktur wie src/jobs/pinfinity/cleanup.ts.
 
+import { withActionHint } from "./publish-error-hint.js";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { UnrecoverableError } from "bullmq";
 import { z } from "zod";
@@ -427,8 +428,10 @@ export async function handlePublishPinFinalFailure(
   job: FailableJob,
 ): Promise<void> {
   const blogProjectId = await loadBlogProjectId(store, payload.pinId);
-  await store.markErrorIfPending(payload.pinId, error.message);
   const httpStatus = httpStatusOf(error);
+  // UI-Meldung (pins.error_message) mit Handlungsanweisung, Ereignisse behalten die Roh-Meldung.
+  const uiMessage = withActionHint(error.message, httpStatus ?? null);
+  await store.markErrorIfPending(payload.pinId, uiMessage);
   await recordPublishEvent(eventStore, {
     pinId: payload.pinId,
     blogProjectId,
@@ -447,7 +450,7 @@ export async function handlePublishPinFinalFailure(
       supabaseCredential: payload.supabaseCredential,
       resendCredential: payload.resendCredential,
       pinId: payload.pinId,
-      errorMessage: error.message,
+      errorMessage: uiMessage,
     },
     { jobId: `publish-error-mail-${payload.pinId}-${job.id}` },
   );

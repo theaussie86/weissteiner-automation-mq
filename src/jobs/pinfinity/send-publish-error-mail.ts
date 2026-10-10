@@ -127,6 +127,13 @@ export function renderErrorMail(c: ErrorMailContent): RenderedMail {
   return { subject, text, html };
 }
 
+// Deep-Link auf die Pin-Detailseite in Pinfinity (Route /projects/:projectId/pins/:pinId).
+// Ohne Projekt-Id bleibt es bei der App-URL.
+export function pinUrl(appUrl: string, projectId: string | null, pinId: string): string {
+  if (!projectId) return appUrl;
+  return `${appUrl.replace(/\/+$/, "")}/projects/${encodeURIComponent(projectId)}/pins/${encodeURIComponent(pinId)}`;
+}
+
 export interface SendErrorMailInput {
   pinId: string;
   errorMessage: string;
@@ -185,7 +192,7 @@ export async function sendPublishErrorMail(
     pinTitle: pin.title,
     articleTitle: pin.article_title,
     errorMessage: input.errorMessage,
-    appUrl: input.appUrl,
+    appUrl: pinUrl(input.appUrl, pin.blog_project_id, pin.id),
   });
 
   try {

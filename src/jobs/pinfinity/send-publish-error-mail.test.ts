@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { UnrecoverableError } from "bullmq";
 import {
   escapeHtml,
+  pinUrl,
   renderErrorMail,
   ResendApiError,
   sendPublishErrorMail,
@@ -334,5 +335,15 @@ describe("renderErrorMail", () => {
 describe("escapeHtml", () => {
   it("escaped die Sonderzeichen", () => {
     expect(escapeHtml(`<a href="x">&'</a>`)).toBe("&lt;a href=&quot;x&quot;&gt;&amp;&#39;&lt;/a&gt;");
+  });
+});
+
+describe("pinUrl", () => {
+  it("baut den Deep-Link auf die Pin-Seite", () => {
+    expect(pinUrl("https://app.example/", "proj-1", "pin-1")).toBe("https://app.example/projects/proj-1/pins/pin-1");
+  });
+
+  it("fällt ohne Projekt auf die App-URL zurück", () => {
+    expect(pinUrl("https://app.example", null, "pin-1")).toBe("https://app.example");
   });
 });
