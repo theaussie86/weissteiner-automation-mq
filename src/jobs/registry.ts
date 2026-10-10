@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { JobsOptions } from "bullmq";
 import type pg from "pg";
+import type { ContextEnqueue } from "./enqueue.js";
+import type { FailableJob } from "../worker/failure.js";
 
 export const QUEUES = ["media", "integrations"] as const;
 export type QueueName = (typeof QUEUES)[number];
@@ -10,6 +12,12 @@ export type QueueName = (typeof QUEUES)[number];
 export interface JobContext {
   db: pg.Pool;
   getCredential: (name: string) => Promise<Record<string, unknown>>;
+  /**
+   * Reiht einen Folge-Job ein (Ticket #9). Validiert das Payload gegen die Registry,
+   * nutzt dieselben Optionen wie POST /jobs (jobId, delay, onExisting) und schreibt den
+   * Archiv-Eintrag. Consumer/Tenant erbt der Folge-Job vom Ursprungsjob.
+   */
+  enqueue: ContextEnqueue;
 }
 
 export interface JobType<P extends z.ZodTypeAny = z.ZodTypeAny> {
@@ -21,6 +29,13 @@ export interface JobType<P extends z.ZodTypeAny = z.ZodTypeAny> {
   attempts?: number;
   backoff?: JobsOptions["backoff"];
   process: (payload: z.infer<P>, ctx: JobContext) => Promise<unknown>;
+  /**
+   * Hook auf das endgültige Scheitern (Ticket #9). Ruft der Worker im failed-Handler
+   * genau einmal auf, wenn kein Retry mehr folgt (isFinalFailure). Fehler im Hook werden
+   * geloggt (event: "onFinalFailure.error") und brechen nichts. Typisch: Pin auf error
+   * setzen und per ctx.enqueue eine Fehler-Mail als Folge-Job einreihen.
+   */
+  onFinalFailure?: (payload: z.infer<P>, error: Error, ctx: JobContext, job: FailableJob) => void | Promise<void>;
 }
 
 const registry = new Map<string, JobType>();

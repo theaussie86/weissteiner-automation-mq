@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
+  createContextEnqueue,
   enqueueJob,
   parseJobOptions,
   type EnqueueableJob,
   type EnqueueQueue,
 } from "./enqueue.js";
+import { registerJobType } from "./registry.js";
 
 function fakeJob(id: string, state: string): EnqueueableJob & { getState: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> } {
   return {
@@ -100,6 +103,72 @@ describe("enqueueJob", () => {
     expect(result.outcome).toBe("enqueued");
     expect(existing.remove).toHaveBeenCalledOnce();
     expect(add).toHaveBeenCalledOnce();
+  });
+});
+
+registerJobType({
+  name: "test.enqueue-target",
+  queue: "integrations",
+  payloadSchema: z.object({ pinId: z.string().min(1) }),
+  attempts: 5,
+  backoff: { type: "exponential", delay: 60000 },
+  process: async () => ({}),
+});
+
+describe("createContextEnqueue", () => {
+  function deps(existing?: EnqueueableJob) {
+    const add = vi.fn(async (_name: string, _data: unknown, opts) => fakeJob(opts.jobId ?? "auto-id", "waiting"));
+    const getJob = vi.fn(async () => existing ?? undefined);
+    const queue: EnqueueQueue = { add, getJob };
+    const getQueue = vi.fn(() => queue);
+    const archive = vi.fn(async () => undefined);
+    const enqueue = createContextEnqueue({ getQueue, archive, origin: { consumer: "pinfinity", tenant: "t1" } });
+    return { enqueue, add, getJob, getQueue, archive };
+  }
+
+  it("validiert das Payload gegen die Registry und legt bei ungültigem Payload nichts an", async () => {
+    const { enqueue, add } = deps();
+    await expect(enqueue("test.enqueue-target", { pinId: "" })).rejects.toThrow(/Invalid payload for test.enqueue-target/);
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it("wirft bei unbekanntem Job-Typ", async () => {
+    const { enqueue } = deps();
+    await expect(enqueue("nope.unknown", {})).rejects.toThrow(/Unknown job type/);
+  });
+
+  it("legt mit Consumer/Tenant des Ursprungsjobs an und reicht Retry-Defaults des Ziel-Typs durch", async () => {
+    const { enqueue, add, getQueue } = deps();
+    const result = await enqueue("test.enqueue-target", { pinId: "p1" }, { jobId: "publish-error-mail-p1", delay: 1000 });
+    expect(result.outcome).toBe("enqueued");
+    expect(getQueue).toHaveBeenCalledWith("integrations");
+    expect(add).toHaveBeenCalledWith(
+      "test.enqueue-target",
+      { payload: { pinId: "p1" }, consumer: "pinfinity", tenant: "t1", callbackUrl: null },
+      { jobId: "publish-error-mail-p1", delay: 1000, attempts: 5, backoff: { type: "exponential", delay: 60000 } },
+    );
+  });
+
+  it("archiviert eine Neuanlage mit Consumer, Tenant und Payload", async () => {
+    const { enqueue, archive } = deps();
+    await enqueue("test.enqueue-target", { pinId: "p9" }, { jobId: "jid-1" });
+    expect(archive).toHaveBeenCalledWith({
+      jobId: "jid-1",
+      queue: "integrations",
+      type: "test.enqueue-target",
+      consumer: "pinfinity",
+      tenant: "t1",
+      payload: { pinId: "p9" },
+    });
+  });
+
+  it("archiviert nicht bei Deduplizierung eines bereits wartenden Jobs", async () => {
+    const existing = fakeJob("publish-error-mail-p1", "delayed");
+    const { enqueue, add, archive } = deps(existing);
+    const result = await enqueue("test.enqueue-target", { pinId: "p1" }, { jobId: "publish-error-mail-p1" });
+    expect(result.outcome).toBe("deduplicated");
+    expect(add).not.toHaveBeenCalled();
+    expect(archive).not.toHaveBeenCalled();
   });
 });
 

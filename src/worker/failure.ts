@@ -33,13 +33,20 @@ export interface FailedHandlerDeps {
   archiveFailed: (jobId: string, error: string) => void;
   /** Sendet den Fehler-Callback nach außen. */
   notifyFailed: (error: string) => void;
+  /**
+   * Hook des Job-Typs auf das endgültige Scheitern (Ticket #9). Wird nur beim letzten
+   * Versuch aufgerufen. Fehler (synchron oder als Rejection) werden geschluckt und als
+   * `onFinalFailure.error` geloggt — sie brechen die Fehlerbehandlung nicht.
+   */
+  onFinalFailure?: (() => void | Promise<void>) | undefined;
   /** Log-Ausgabe (Default console.error). */
   log?: (line: string) => void;
 }
 
 /**
  * Gemeinsame Logik des `failed`-Handlers. Bei Zwischenfehlern nur Log `retry_scheduled`,
- * kein Archiv, kein Callback. Erst beim endgültigen Scheitern Archiv + Callback.
+ * kein Archiv, kein Callback, kein Hook. Erst beim endgültigen Scheitern Archiv +
+ * Callback + onFinalFailure-Hook.
  */
 export function handleFailed(job: FailableJob | undefined, err: Error, deps: FailedHandlerDeps): void {
   const log = deps.log ?? ((line: string) => console.error(line));
@@ -60,5 +67,27 @@ export function handleFailed(job: FailableJob | undefined, err: Error, deps: Fai
   if (job?.id) {
     deps.archiveFailed(job.id, err.message);
     deps.notifyFailed(err.message);
+  }
+  if (deps.onFinalFailure) {
+    const logHookError = (hookErr: unknown) =>
+      log(
+        JSON.stringify({
+          event: "onFinalFailure.error",
+          queue: deps.queue,
+          jobId: job?.id,
+          type: job?.name,
+          error: (hookErr as Error).message,
+        }),
+      );
+    try {
+      // Synchron aufrufen, damit der Hook nachweisbar genau einmal läuft; eine
+      // zurückgegebene Promise fangen wir zusätzlich ab (fire-and-forget wie der Callback).
+      const result = deps.onFinalFailure();
+      if (result && typeof (result as Promise<unknown>).then === "function") {
+        void (result as Promise<unknown>).catch(logHookError);
+      }
+    } catch (hookErr) {
+      logHookError(hookErr);
+    }
   }
 }

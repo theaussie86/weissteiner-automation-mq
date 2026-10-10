@@ -80,4 +80,41 @@ describe("handleFailed", () => {
     expect(d.archiveFailed).toHaveBeenCalledTimes(1);
     expect(d.notifyFailed).toHaveBeenCalledTimes(1);
   });
+
+  it("ruft den onFinalFailure-Hook beim letzten Versuch genau einmal auf", () => {
+    const onFinalFailure = vi.fn();
+    handleFailed(job(4, 4), new Error("boom"), { ...deps(), onFinalFailure });
+    expect(onFinalFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it("ruft den onFinalFailure-Hook bei einem Zwischenversuch nicht auf", () => {
+    const onFinalFailure = vi.fn();
+    handleFailed(job(1, 4), new Error("boom"), { ...deps(), onFinalFailure });
+    expect(onFinalFailure).not.toHaveBeenCalled();
+  });
+
+  it("schluckt synchrone Hook-Fehler und loggt onFinalFailure.error", () => {
+    const d = deps();
+    const onFinalFailure = vi.fn(() => {
+      throw new Error("hook kaputt");
+    });
+    expect(() => handleFailed(job(4, 4), new Error("boom"), { ...d, onFinalFailure })).not.toThrow();
+    const errLine = d.log.mock.calls
+      .map((c) => JSON.parse(c[0] as string))
+      .find((l) => l.event === "onFinalFailure.error");
+    expect(errLine).toMatchObject({ event: "onFinalFailure.error", queue: "integrations", jobId: "j1", error: "hook kaputt" });
+  });
+
+  it("schluckt abgelehnte Hook-Promises und loggt onFinalFailure.error", async () => {
+    const d = deps();
+    const onFinalFailure = vi.fn(async () => {
+      throw new Error("async kaputt");
+    });
+    handleFailed(job(4, 4), new Error("boom"), { ...d, onFinalFailure });
+    await new Promise((r) => setTimeout(r, 0));
+    const errLine = d.log.mock.calls
+      .map((c) => JSON.parse(c[0] as string))
+      .find((l) => l.event === "onFinalFailure.error");
+    expect(errLine).toMatchObject({ event: "onFinalFailure.error", error: "async kaputt" });
+  });
 });

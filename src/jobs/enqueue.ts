@@ -1,4 +1,6 @@
 import type { JobsOptions } from "bullmq";
+import type { ArchiveEntry } from "../archive.js";
+import { getJobType } from "./registry.js";
 
 // jobId-Muster laut Ticket #6: kein ":" (BullMQ verbietet es in Custom-IDs).
 export const JOB_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
@@ -68,6 +70,63 @@ export async function enqueueJob(
 
   const job = await queue.add(name, data, addOpts);
   return { outcome: "enqueued", job };
+}
+
+// Optionen, die ein Folge-Job mitbekommen darf — dieselben wie POST /jobs.
+// attempts/backoff kommen immer aus den Retry-Defaults des Ziel-Job-Typs.
+export type ContextEnqueueOptions = Pick<EnqueueOptions, "jobId" | "delay" | "onExisting">;
+
+export type ContextEnqueue = (
+  typeName: string,
+  payload: unknown,
+  opts?: ContextEnqueueOptions,
+) => Promise<EnqueueResult>;
+
+export interface ContextEnqueueDeps {
+  /** Liefert die (ggf. nicht konsumierte) Queue des Ziel-Job-Typs. */
+  getQueue: (queueName: string) => EnqueueQueue;
+  /** Schreibt den Archiv-Eintrag für einen neu angelegten Folge-Job. */
+  archive: (entry: ArchiveEntry) => Promise<void> | void;
+  /** Consumer/Tenant des Ursprungsjobs, die der Folge-Job erbt. */
+  origin: { consumer: string; tenant: string | null };
+}
+
+// Baut die ctx.enqueue-Funktion für einen laufenden Job (Ticket #9). Validiert das
+// Payload gegen die Registry (wirft bei ungültigem Payload), reicht die Retry-Defaults
+// des Ziel-Typs an add() durch (wie POST /jobs) und archiviert nur echte Neuanlagen.
+export function createContextEnqueue(deps: ContextEnqueueDeps): ContextEnqueue {
+  return async (typeName, payload, opts) => {
+    const jobType = getJobType(typeName);
+    if (!jobType) {
+      throw new Error(`Unknown job type: ${typeName}`);
+    }
+    const parsed = jobType.payloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      throw new Error(`Invalid payload for ${typeName}: ${parsed.error.issues.map((i) => i.message).join(", ")}`);
+    }
+    const data = {
+      payload: parsed.data,
+      consumer: deps.origin.consumer,
+      tenant: deps.origin.tenant,
+      callbackUrl: null,
+    };
+    const result = await enqueueJob(deps.getQueue(jobType.queue), jobType.name, data, {
+      ...(opts ?? {}),
+      attempts: jobType.attempts,
+      backoff: jobType.backoff,
+    });
+    if (result.outcome === "enqueued") {
+      await deps.archive({
+        jobId: result.job.id!,
+        queue: jobType.queue,
+        type: jobType.name,
+        consumer: deps.origin.consumer,
+        tenant: deps.origin.tenant ?? undefined,
+        payload: parsed.data,
+      });
+    }
+    return result;
+  };
 }
 
 export interface JobOptionsInput {
