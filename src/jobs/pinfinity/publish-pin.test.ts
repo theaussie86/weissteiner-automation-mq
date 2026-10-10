@@ -9,7 +9,12 @@ import {
   type PublishablePin,
   type PublishPinPayload,
 } from "./publish-pin.js";
-import { PinterestApiError, type PinterestClient } from "../../integrations/pinterest.js";
+import {
+  PinterestApiError,
+  type PinterestClient,
+  type PinterestMediaStatus,
+  type PinterestVideoRegistration,
+} from "../../integrations/pinterest.js";
 
 const SCHEDULED_AT = "2026-10-10T12:00:00.000Z";
 
@@ -20,7 +25,11 @@ function basePin(overrides: Partial<PublishablePin> = {}): PublishablePin {
     scheduled_at: SCHEDULED_AT,
     pinterest_pin_id: null,
     pinterest_board_id: "board-9",
+    media_type: "image",
     image_path: "proj/img.jpg",
+    video_path: null,
+    cover_image_path: null,
+    cover_keyframe_seconds: null,
     title: "Titel",
     description: "Beschreibung",
     alt_text: "Alt",
@@ -53,6 +62,7 @@ function fakeStore(
     loadPin: async () => pin,
     getAccessToken: async () => opts.token ?? { ok: true, token: "tok" },
     publicImageUrl: (p) => `https://sb.example/storage/v1/object/public/pin-images/${p}`,
+    publicVideoUrl: (p) => `https://sb.example/storage/v1/object/public/pin-videos/${p}`,
     markPublished,
     deactivateConnection,
     markErrorIfPending,
@@ -60,12 +70,24 @@ function fakeStore(
   return { store, markPublished, deactivateConnection, markErrorIfPending };
 }
 
+// Für Bild-Tests reicht createPin; die Video-Methoden werfen, falls versehentlich genutzt.
 function fakePinterest(behaviour: () => Promise<{ id: string }>): {
   client: PinterestClient;
   createPin: ReturnType<typeof vi.fn>;
 } {
   const createPin = vi.fn(behaviour);
-  return { client: { createPin }, createPin };
+  const notUsed = async (): Promise<never> => {
+    throw new Error("video method not expected in this test");
+  };
+  return {
+    client: {
+      createPin,
+      registerVideoMedia: notUsed,
+      uploadVideoToS3: notUsed,
+      getMediaStatus: notUsed,
+    },
+    createPin,
+  };
 }
 
 const noSleep = { sleep: async () => {}, now: () => new Date(SCHEDULED_AT) };
@@ -314,6 +336,166 @@ describe("publishPin Rate-Limit pro Connection (Ticket #13)", () => {
     expect(defer).toHaveBeenCalledWith(7000);
     expect(createPin).not.toHaveBeenCalled();
     expect(markPublished).not.toHaveBeenCalled();
+  });
+});
+
+describe("publishPin Video (Ticket #11)", () => {
+  const DEFAULT_REG: PinterestVideoRegistration = {
+    mediaId: "media-1",
+    uploadUrl: "https://s3.example/upload",
+    uploadParameters: { key: "k", policy: "p" },
+  };
+
+  function videoPin(overrides: Partial<PublishablePin> = {}): PublishablePin {
+    return basePin({ media_type: "video", image_path: null, video_path: "proj/clip.mp4", ...overrides });
+  }
+
+  function fakeVideoPinterest(behaviour: {
+    register?: () => Promise<PinterestVideoRegistration>;
+    upload?: (reg: PinterestVideoRegistration, path: string) => Promise<void>;
+    statuses?: PinterestMediaStatus[];
+    create?: () => Promise<{ id: string }>;
+  } = {}) {
+    const registerVideoMedia = vi.fn(behaviour.register ?? (async () => DEFAULT_REG));
+    const uploadVideoToS3 = vi.fn(behaviour.upload ?? (async () => {}));
+    const statuses = behaviour.statuses ?? (["succeeded"] as PinterestMediaStatus[]);
+    let statusCall = 0;
+    const getMediaStatus = vi.fn(async () => statuses[Math.min(statusCall++, statuses.length - 1)]);
+    const createPin = vi.fn(behaviour.create ?? (async () => ({ id: "vpin" })));
+    const client: PinterestClient = { createPin, registerVideoMedia, uploadVideoToS3, getMediaStatus };
+    return { client, registerVideoMedia, uploadVideoToS3, getMediaStatus, createPin };
+  }
+
+  function fakeDownload() {
+    const cleanup = vi.fn(async () => {});
+    const download = vi.fn(async () => ({ path: "/tmp/clip.mp4", cleanup }));
+    return { download, cleanup };
+  }
+
+  it("Erfolgspfad: registriert, lädt hoch, pollt, legt Video-Pin an und räumt auf", async () => {
+    const { store, markPublished } = fakeStore(videoPin());
+    const pt = fakeVideoPinterest({ statuses: ["registered", "processing", "succeeded"] });
+    const { download, cleanup } = fakeDownload();
+    const result = await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download });
+
+    expect(result).toEqual({ published: true, pinterestPinId: "vpin" });
+    expect(pt.registerVideoMedia).toHaveBeenCalledWith("tok");
+    expect(download).toHaveBeenCalledWith("https://sb.example/storage/v1/object/public/pin-videos/proj/clip.mp4");
+    expect(pt.uploadVideoToS3).toHaveBeenCalledWith(DEFAULT_REG, "/tmp/clip.mp4");
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(pt.getMediaStatus).toHaveBeenCalledTimes(3);
+    expect(pt.createPin).toHaveBeenCalledWith("tok", {
+      board_id: "board-9",
+      media_source: { source_type: "video_id", media_id: "media-1", cover_image_key_frame_time: 1000 },
+      title: "Titel",
+      description: "Beschreibung",
+      alt_text: "Alt",
+      link: "https://blog.example/post",
+      ai_disclosures: { values: ["AI_MODIFIED"] },
+    });
+    expect(markPublished).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cover aus cover_image_path => cover_image_url", async () => {
+    const { store } = fakeStore(videoPin({ cover_image_path: "proj/cover.jpg", cover_keyframe_seconds: 7 }));
+    const pt = fakeVideoPinterest();
+    const { download } = fakeDownload();
+    await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download });
+    expect(pt.createPin.mock.calls[0][1].media_source).toEqual({
+      source_type: "video_id",
+      media_id: "media-1",
+      cover_image_url: "https://sb.example/storage/v1/object/public/pin-images/proj/cover.jpg",
+    });
+  });
+
+  it("Cover-Keyframe: Sekunden werden zu Millisekunden", async () => {
+    const { store } = fakeStore(videoPin({ cover_keyframe_seconds: 3 }));
+    const pt = fakeVideoPinterest();
+    const { download } = fakeDownload();
+    await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download });
+    expect(pt.createPin.mock.calls[0][1].media_source.cover_image_key_frame_time).toBe(3000);
+  });
+
+  it("fehlendes Video => Unrecoverable", async () => {
+    const { store } = fakeStore(videoPin({ video_path: null }));
+    const pt = fakeVideoPinterest();
+    const { download } = fakeDownload();
+    const err = await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download }).catch((e) => e);
+    expect(err).toBeInstanceOf(UnrecoverableError);
+    expect(err.message).toBe("Pin must have a video");
+    expect(pt.registerVideoMedia).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it("Registrierung 5xx => Retry, Video wird nicht geladen", async () => {
+    const { store } = fakeStore(videoPin());
+    const pt = fakeVideoPinterest({
+      register: async () => {
+        throw new PinterestApiError(500, "server");
+      },
+    });
+    const { download } = fakeDownload();
+    const err = await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download }).catch((e) => e);
+    expect(err).toBeInstanceOf(PinterestApiError);
+    expect(err).not.toBeInstanceOf(UnrecoverableError);
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it("S3-Upload 5xx => Retry, Temp-Datei trotzdem gelöscht", async () => {
+    const { store } = fakeStore(videoPin());
+    const pt = fakeVideoPinterest({
+      upload: async () => {
+        throw new PinterestApiError(503, "s3 down");
+      },
+    });
+    const { download, cleanup } = fakeDownload();
+    const err = await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download }).catch((e) => e);
+    expect(err).toBeInstanceOf(PinterestApiError);
+    expect(err).not.toBeInstanceOf(UnrecoverableError);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(pt.getMediaStatus).not.toHaveBeenCalled();
+    expect(pt.createPin).not.toHaveBeenCalled();
+  });
+
+  it("S3-Upload 4xx => Unrecoverable, Temp-Datei gelöscht", async () => {
+    const { store } = fakeStore(videoPin());
+    const pt = fakeVideoPinterest({
+      upload: async () => {
+        throw new PinterestApiError(400, "bad upload");
+      },
+    });
+    const { download, cleanup } = fakeDownload();
+    const err = await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download }).catch((e) => e);
+    expect(err).toBeInstanceOf(UnrecoverableError);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("Polling failed => Unrecoverable, kein Pin", async () => {
+    const { store } = fakeStore(videoPin());
+    const pt = fakeVideoPinterest({ statuses: ["processing", "failed"] });
+    const { download, cleanup } = fakeDownload();
+    const err = await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download }).catch((e) => e);
+    expect(err).toBeInstanceOf(UnrecoverableError);
+    expect(err.message).toBe("Pinterest media processing failed");
+    expect(pt.createPin).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("Polling-Timeout => Retry (normaler Error)", async () => {
+    const { store } = fakeStore(videoPin());
+    const pt = fakeVideoPinterest({ statuses: ["processing"] });
+    const { download } = fakeDownload();
+    let t = 1000;
+    const err = await publishPin(
+      store,
+      pt.client,
+      { pinId: "pin-1", scheduledAt: SCHEDULED_AT },
+      { sleep: async () => {}, now: () => new Date((t += 10000)), downloadVideo: download, videoPollIntervalMs: 5000, videoPollTimeoutMs: 20000 },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(UnrecoverableError);
+    expect(err.message).toContain("timed out");
+    expect(pt.createPin).not.toHaveBeenCalled();
   });
 });
 
