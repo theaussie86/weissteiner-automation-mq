@@ -32,7 +32,6 @@ function basePin(overrides: Partial<PublishablePin> = {}): PublishablePin {
     pinterest_board_id: "board-9",
     media_type: "image",
     image_path: "proj/img.jpg",
-    video_path: null,
     cover_image_path: null,
     cover_keyframe_seconds: null,
     title: "Titel",
@@ -67,7 +66,6 @@ function fakeStore(
     loadPin: async () => pin,
     getAccessToken: async () => opts.token ?? { ok: true, token: "tok" },
     publicImageUrl: (p) => `https://sb.example/storage/v1/object/public/pin-images/${p}`,
-    publicVideoUrl: (p) => `https://sb.example/storage/v1/object/public/pin-videos/${p}`,
     markPublished,
     deactivateConnection,
     markErrorIfPending,
@@ -369,7 +367,7 @@ describe("publishPin Video (Ticket #11)", () => {
   };
 
   function videoPin(overrides: Partial<PublishablePin> = {}): PublishablePin {
-    return basePin({ media_type: "video", image_path: null, video_path: "proj/clip.mp4", ...overrides });
+    return basePin({ media_type: "video", image_path: "proj/clip.mp4", ...overrides });
   }
 
   function fakeVideoPinterest(behaviour: {
@@ -402,7 +400,7 @@ describe("publishPin Video (Ticket #11)", () => {
 
     expect(result).toEqual({ published: true, pinterestPinId: "vpin" });
     expect(pt.registerVideoMedia).toHaveBeenCalledWith("tok");
-    expect(download).toHaveBeenCalledWith("https://sb.example/storage/v1/object/public/pin-videos/proj/clip.mp4");
+    expect(download).toHaveBeenCalledWith("https://sb.example/storage/v1/object/public/pin-images/proj/clip.mp4");
     expect(pt.uploadVideoToS3).toHaveBeenCalledWith(DEFAULT_REG, "/tmp/clip.mp4");
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(pt.getMediaStatus).toHaveBeenCalledTimes(3);
@@ -439,7 +437,7 @@ describe("publishPin Video (Ticket #11)", () => {
   });
 
   it("fehlendes Video => Unrecoverable", async () => {
-    const { store } = fakeStore(videoPin({ video_path: null }));
+    const { store } = fakeStore(videoPin({ image_path: null }));
     const pt = fakeVideoPinterest();
     const { download } = fakeDownload();
     const err = await publishPin(store, pt.client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, { ...noSleep, downloadVideo: download }).catch((e) => e);

@@ -25,7 +25,6 @@ import { recordPublishEvent, supabasePublishEventStore, type PublishEventStore }
 import type { FailableJob } from "../../worker/failure.js";
 
 const IMAGE_BUCKET = "pin-images";
-const VIDEO_BUCKET = "pin-videos";
 const TITLE_MAX = 100;
 const DESCRIPTION_MAX = 800;
 const ALT_TEXT_MAX = 500;
@@ -51,9 +50,8 @@ export interface PublishablePin {
   pinterest_board_id: string | null;
   /** "image" (Default) oder "video". */
   media_type: string | null;
+  /** Bild- oder Video-Datei im Bucket pin-images (bei media_type = "video" das Video). */
   image_path: string | null;
-  /** Nur bei media_type = "video". */
-  video_path: string | null;
   /** Optionales Standbild als Video-Cover (im Bild-Bucket). */
   cover_image_path: string | null;
   /** Fallback-Cover: Zeitpunkt im Video in Sekunden, wenn kein cover_image_path. */
@@ -85,7 +83,6 @@ export interface PinStore {
   loadPin(pinId: string): Promise<PublishablePin | null>;
   getAccessToken(connectionId: string): Promise<AccessTokenResult>;
   publicImageUrl(imagePath: string): string;
-  publicVideoUrl(videoPath: string): string;
   /** Atomar: nur solange der Pin noch metadata_created ist. */
   markPublished(
     pinId: string,
@@ -176,7 +173,7 @@ async function publishVideoPin(
   const registration = await callPinterest(store, connectionId, () => pinterest.registerVideoMedia(token));
 
   // 2. Video laden und 3. hochladen. Temp-Datei im finally aufräumen (auch bei Fehler).
-  const videoUrl = store.publicVideoUrl(pin.video_path as string);
+  const videoUrl = store.publicImageUrl(pin.image_path as string);
   const download = await (options.downloadVideo ?? downloadToTempFile)(videoUrl);
   try {
     await callPinterest(store, connectionId, () => pinterest.uploadVideoToS3(registration, download.path));
@@ -286,11 +283,7 @@ export async function publishPin(
   if (!pin.connection_id) throw new UnrecoverableError("No Pinterest account connected to this project");
   if (!pin.pinterest_board_id) throw new UnrecoverableError("Pin must have a Pinterest board assigned");
   const isVideo = (pin.media_type ?? "image") === "video";
-  if (isVideo) {
-    if (!pin.video_path) throw new UnrecoverableError("Pin must have a video");
-  } else {
-    if (!pin.image_path) throw new UnrecoverableError("Pin must have an image");
-  }
+  if (!pin.image_path) throw new UnrecoverableError(isVideo ? "Pin must have a video" : "Pin must have an image");
 
   const token = await store.getAccessToken(pin.connection_id);
   if (!token.ok) {
@@ -468,7 +461,7 @@ export function supabasePinStore(sb: SupabaseClient, supabaseUrl: string): PinSt
       const { data, error } = await sb
         .from("pins")
         .select(
-          "id, blog_project_id, status, scheduled_at, pinterest_pin_id, pinterest_board_id, media_type, image_path, video_path, cover_image_path, cover_keyframe_seconds, title, description, alt_text, alternate_url, ai_modified, synthetic_performer, blog_articles(url), blog_projects(pinterest_connection_id)",
+          "id, blog_project_id, status, scheduled_at, pinterest_pin_id, pinterest_board_id, media_type, image_path, cover_image_path, cover_keyframe_seconds, title, description, alt_text, alternate_url, ai_modified, synthetic_performer, blog_articles(url), blog_projects(pinterest_connection_id)",
         )
         .eq("id", pinId)
         .maybeSingle();
@@ -486,7 +479,6 @@ export function supabasePinStore(sb: SupabaseClient, supabaseUrl: string): PinSt
         pinterest_board_id: (row.pinterest_board_id as string | null) ?? null,
         media_type: (row.media_type as string | null) ?? null,
         image_path: (row.image_path as string | null) ?? null,
-        video_path: (row.video_path as string | null) ?? null,
         cover_image_path: (row.cover_image_path as string | null) ?? null,
         cover_keyframe_seconds: (row.cover_keyframe_seconds as number | null) ?? null,
         title: (row.title as string | null) ?? null,
@@ -517,9 +509,6 @@ export function supabasePinStore(sb: SupabaseClient, supabaseUrl: string): PinSt
     },
     publicImageUrl(imagePath) {
       return `${supabaseUrl}/storage/v1/object/public/${IMAGE_BUCKET}/${imagePath}`;
-    },
-    publicVideoUrl(videoPath) {
-      return `${supabaseUrl}/storage/v1/object/public/${VIDEO_BUCKET}/${videoPath}`;
     },
     async markPublished(pinId, data) {
       const { error } = await sb
