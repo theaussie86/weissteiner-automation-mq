@@ -6,6 +6,7 @@ import { getJobType } from "../jobs/registry.js";
 import { CLEANUP_JOB_NAME } from "../jobs/cleanup.js";
 import { CREDENTIALS_REFRESH_JOB_NAME } from "../jobs/credentials-refresh.js";
 import { archiveFinished } from "../archive.js";
+import { handleFailed } from "./failure.js";
 import { sendCallback } from "../callback.js";
 import { getCredential, type Refresher } from "../credentials/store.js";
 import { refreshAccessToken } from "../credentials/providers/google.js";
@@ -108,11 +109,15 @@ for (const worker of workers) {
     notifyCallback(worker.name, job, { status: "completed", result: job.returnvalue });
   });
   worker.on("failed", (job, err) => {
-    console.error(JSON.stringify({ event: "failed", queue: worker.name, jobId: job?.id, type: job?.name, error: err.message }));
-    if (job?.id) {
-      void archiveFinished(db, worker.name, job.id, { status: "failed", error: err.message });
-      notifyCallback(worker.name, job, { status: "failed", error: err.message });
-    }
+    // Archiv und Callback erst beim endgültigen Scheitern (Ticket #8). Zwischenfehler
+    // mit anstehendem Retry erzeugen nur ein retry_scheduled-Log in handleFailed.
+    handleFailed(job, err, {
+      queue: worker.name,
+      archiveFailed: (jobId, error) => void archiveFinished(db, worker.name, jobId, { status: "failed", error }),
+      notifyFailed: (error) => {
+        if (job) notifyCallback(worker.name, job, { status: "failed", error });
+      },
+    });
   });
 }
 
