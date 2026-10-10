@@ -70,6 +70,7 @@ export function supabaseCleanupClient(sb: SupabaseClient): CleanupClient {
         .not("pinterest_pin_id", "is", null)
         .not("image_path", "is", null)
         .lt("published_at", cutoff)
+        .order("published_at", { ascending: true })
         .limit(limit);
       if (error) throw new Error(`Supabase-Query fehlgeschlagen: ${error.message}`);
       return (data ?? []) as CleanablePin[];

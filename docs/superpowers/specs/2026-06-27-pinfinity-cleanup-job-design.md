@@ -10,7 +10,7 @@ Niedrigste Komplexität (nur Supabase DB + Storage, kein externer Token, keine K
 
 ## Domänensprache
 
-Siehe `CONTEXT.md`. Relevant: **Job**, **Job-Typ**, **Schedule** (ADR-0008), **Credential** / **Credential Store** (ADR-0002), **Consumer**, **Queue**.
+Siehe `GLOSSARY.md`. Relevant: **Job**, **Job-Typ**, **Schedule** (ADR-0008), **Credential** / **Credential Store** (ADR-0002), **Consumer**, **Queue**.
 
 Neuer Begriff implizit: ein **Pinfinity-Job** ist ein Job-Typ, dessen `process` gegen Pinfinitys eigene Supabase-Instanz arbeitet (nicht die MQ-Postgres). Tabellen-/Bucket-Namen (`pins`, `pin-images`) sind Pinfinity-spezifisch und im Job hart codiert.
 
@@ -89,7 +89,7 @@ export async function cleanupPublishedImages(
 
 Spiegelt die Edge Function `cleanup-published-images`:
 
-1. Query `pins`: `pinterest_pin_id is not null` UND `image_path is not null` UND `published_at < now - 7 Tage`, `limit 100`, Felder `id, image_path`.
+1. Query `pins`: `pinterest_pin_id is not null` UND `image_path is not null` UND `published_at < now - 7 Tage`, deterministische Reihenfolge, älteste zuerst (`order published_at asc`), `limit 100`, Felder `id, image_path`.
 2. Keine Treffer → `{ total: 0, cleaned: 0, failed: 0, dryRun }` zurück.
 3. `dryRun === true` → `{ total: n, cleaned: 0, failed: 0, dryRun: true }` zurück (nichts gelöscht, nichts geändert).
 4. sonst: `client.storage.from("pin-images").remove(imagePaths)`.
