@@ -15,14 +15,42 @@ export interface ArchiveEntry {
 
 export async function archiveQueued(db: pg.Pool, entry: ArchiveEntry): Promise<void> {
   try {
+    // Bei wiederverwendeter jobId (POST /jobs onExisting=replace oder Neuanlage nach
+    // abgeschlossenem/fehlgeschlagenem Job) den Eintrag auf einen frischen Lauf zurücksetzen:
+    // neues Payload, Status wieder "queued", alte Ergebnisse/Fehler/finished_at verwerfen.
     await db.query(
       `insert into job_archive (job_id, queue, type, consumer, tenant, payload)
        values ($1, $2, $3, $4, $5, $6)
-       on conflict (queue, job_id) do nothing`,
+       on conflict (queue, job_id) do update
+         set type = excluded.type,
+             consumer = excluded.consumer,
+             tenant = excluded.tenant,
+             payload = excluded.payload,
+             status = 'queued',
+             result = null,
+             error = null,
+             finished_at = null,
+             created_at = now()`,
       [entry.jobId, entry.queue, entry.type, entry.consumer, entry.tenant ?? null, JSON.stringify(entry.payload ?? null)],
     );
   } catch (err) {
     console.error(JSON.stringify({ event: "archive.error", op: "queued", jobId: entry.jobId, error: (err as Error).message }));
+  }
+}
+
+// Markiert einen wartenden/verzögerten Job als abgebrochen (DELETE /jobs, Ticket #7).
+// Nur Einträge im Status "queued" werden angefasst, damit ein bereits abgeschlossener
+// oder fehlgeschlagener Lauf nie überschrieben wird.
+export async function archiveCancelled(db: pg.Pool, queue: string, jobId: string): Promise<void> {
+  try {
+    await db.query(
+      `update job_archive
+       set status = 'cancelled', finished_at = now()
+       where queue = $1 and job_id = $2 and status = 'queued'`,
+      [queue, jobId],
+    );
+  } catch (err) {
+    console.error(JSON.stringify({ event: "archive.error", op: "cancelled", jobId, error: (err as Error).message }));
   }
 }
 

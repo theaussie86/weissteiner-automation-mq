@@ -17,7 +17,8 @@
     "start:worker": "node dist/worker/index.js",
     "start:board": "node dist/board/index.js",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sandcastle": "npx tsx .sandcastle/main.ts"
   },
   "dependencies": {
     "@bull-board/api": "^9.10.4",
@@ -31,6 +32,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@ai-hero/sandcastle": "^0.12.0",
     "@types/node": "^25.9.3",
     "@types/pg": "^8.20.0",
     "tsx": "^4.22.4",

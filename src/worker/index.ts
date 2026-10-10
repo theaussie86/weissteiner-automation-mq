@@ -1,11 +1,13 @@
-import { Queue, Worker } from "bullmq";
+import { DelayedError, Queue, Worker, type Job } from "bullmq";
 import pg from "pg";
 import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { CLEANUP_JOB_NAME } from "../jobs/cleanup.js";
 import { CREDENTIALS_REFRESH_JOB_NAME } from "../jobs/credentials-refresh.js";
-import { archiveFinished } from "../archive.js";
+import { archiveFinished, archiveQueued } from "../archive.js";
+import { handleFailed, type FailableJob } from "./failure.js";
+import { createContextEnqueue } from "../jobs/enqueue.js";
 import { sendCallback } from "../callback.js";
 import { getCredential, type Refresher } from "../credentials/store.js";
 import { refreshAccessToken } from "../credentials/providers/google.js";
@@ -13,6 +15,9 @@ import type { JobContext } from "../jobs/registry.js";
 import "../jobs/ping.js";
 import "../jobs/media.js";
 import "../jobs/pinfinity/cleanup.js";
+import "../jobs/pinfinity/publish-pin.js";
+import "../jobs/pinfinity/send-publish-error-mail.js";
+import "../jobs/pinfinity/reconcile-publish-jobs.js";
 
 const config = loadConfig();
 const connection = createRedis(config.REDIS_URL);
@@ -30,15 +35,52 @@ const refreshers: Record<string, Refresher> = {
     return { data: { ...data, accessToken: result.accessToken }, expiresAt: result.expiresAt };
   },
 };
-const ctx: JobContext = {
-  db,
-  getCredential: (name) => {
-    if (!config.CREDENTIAL_MASTER_KEY) {
-      return Promise.reject(new Error("Credential store not configured (CREDENTIAL_MASTER_KEY missing)"));
-    }
-    return getCredential(db, config.CREDENTIAL_MASTER_KEY, name, refreshers);
-  },
+const getCredentialForJob = (name: string): Promise<Record<string, unknown>> => {
+  if (!config.CREDENTIAL_MASTER_KEY) {
+    return Promise.reject(new Error("Credential store not configured (CREDENTIAL_MASTER_KEY missing)"));
+  }
+  return getCredential(db, config.CREDENTIAL_MASTER_KEY, name, refreshers);
 };
+
+// Persistente Queues für ctx.enqueue (Ticket #9): Folge-Jobs dürfen auch in Queues
+// landen, die dieser Worker nicht konsumiert — dafür reicht der Redis-Zugriff.
+const enqueueQueues = new Map<string, Queue>();
+function enqueueQueue(name: string): Queue {
+  let queue = enqueueQueues.get(name);
+  if (!queue) {
+    queue = new Queue(name, { connection });
+    enqueueQueues.set(name, queue);
+  }
+  return queue;
+}
+
+// Pro Job ein Kontext: ctx.enqueue erbt Consumer (sonst "system") und Tenant des
+// Ursprungsjobs. job.data fehlt bei Scheduler-Jobs — dann greift der Fallback.
+// deferrable (aktiver Job + Token) gibt es nur im Worker-Prozess, nicht in
+// onFinalFailure — nur dann kann sich der Job per moveToDelayed selbst verschieben.
+function jobContext(
+  data: { consumer?: string; tenant?: string | null } | undefined,
+  deferrable?: { job: Job; token: string | undefined },
+): JobContext {
+  const ctx: JobContext = {
+    db,
+    getCredential: getCredentialForJob,
+    enqueue: createContextEnqueue({
+      getQueue: (name) => enqueueQueue(name),
+      archive: (entry) => archiveQueued(db, entry),
+      origin: { consumer: data?.consumer ?? "system", tenant: data?.tenant ?? null },
+    }),
+    redis: connection,
+  };
+  if (deferrable) {
+    ctx.defer = async (delayMs: number): Promise<never> => {
+      await deferrable.job.moveToDelayed(Date.now() + delayMs, deferrable.token);
+      // DelayedError signalisiert BullMQ: Job ist verschoben, kein fehlgeschlagener Versuch.
+      throw new DelayedError();
+    };
+  }
+  return ctx;
+}
 
 // Repeatable Cleanup (ADR-0004) — Upsert ist idempotent.
 if (config.WORKER_QUEUES.includes("media")) {
@@ -62,7 +104,7 @@ const workers = config.WORKER_QUEUES.map(
   (queueName) =>
     new Worker(
       queueName,
-      async (job) => {
+      async (job, token) => {
         const jobType = getJobType(job.name);
         if (!jobType) {
           throw new Error(`No processor registered for job type: ${job.name}`);
@@ -70,7 +112,7 @@ const workers = config.WORKER_QUEUES.map(
         // job.data = { payload, consumer } — Quelle ist Job-Attribut (ADR-0003).
         // Scheduler-Jobs (Cleanup) haben kein data — leeres Payload.
         const payload = jobType.payloadSchema.parse(job.data?.payload ?? {});
-        return jobType.process(payload, ctx);
+        return jobType.process(payload, jobContext(job.data, { job, token }));
       },
       { connection, concurrency: queueName === "media" ? 1 : 5 },
     ),
@@ -101,6 +143,27 @@ function notifyCallback(
   });
 }
 
+// Baut die onFinalFailure-Closure für den failed-Handler (Ticket #9) oder undefined,
+// wenn der Job-Typ keinen Hook hat. handleFailed ruft sie nur beim letzten Versuch.
+function finalFailureHook(
+  queue: string,
+  job:
+    | { id?: string; name: string; data?: { consumer?: string; tenant?: string | null; payload?: unknown } }
+    | undefined,
+  err: Error,
+): (() => void | Promise<void>) | undefined {
+  if (!job) return undefined;
+  const jobType = getJobType(job.name);
+  if (!jobType?.onFinalFailure) return undefined;
+  const parsed = jobType.payloadSchema.safeParse(job.data?.payload ?? {});
+  if (!parsed.success) {
+    console.error(JSON.stringify({ event: "onFinalFailure.error", queue, jobId: job.id, type: job.name, error: "invalid payload" }));
+    return undefined;
+  }
+  const hook = jobType.onFinalFailure;
+  return () => hook(parsed.data, err, jobContext(job.data), job as FailableJob);
+}
+
 for (const worker of workers) {
   worker.on("completed", (job) => {
     console.log(JSON.stringify({ event: "completed", queue: worker.name, jobId: job.id, type: job.name }));
@@ -108,11 +171,17 @@ for (const worker of workers) {
     notifyCallback(worker.name, job, { status: "completed", result: job.returnvalue });
   });
   worker.on("failed", (job, err) => {
-    console.error(JSON.stringify({ event: "failed", queue: worker.name, jobId: job?.id, type: job?.name, error: err.message }));
-    if (job?.id) {
-      void archiveFinished(db, worker.name, job.id, { status: "failed", error: err.message });
-      notifyCallback(worker.name, job, { status: "failed", error: err.message });
-    }
+    // Archiv und Callback erst beim endgültigen Scheitern (Ticket #8). Zwischenfehler
+    // mit anstehendem Retry erzeugen nur ein retry_scheduled-Log in handleFailed.
+    // onFinalFailure-Hook (Ticket #9) läuft ebenfalls nur beim letzten Versuch.
+    handleFailed(job, err, {
+      queue: worker.name,
+      archiveFailed: (jobId, error) => void archiveFinished(db, worker.name, jobId, { status: "failed", error }),
+      notifyFailed: (error) => {
+        if (job) notifyCallback(worker.name, job, { status: "failed", error });
+      },
+      onFinalFailure: finalFailureHook(worker.name, job, err),
+    });
   });
 }
 
@@ -120,6 +189,7 @@ console.log(JSON.stringify({ event: "worker.started", queues: config.WORKER_QUEU
 
 async function shutdown() {
   await Promise.all(workers.map((w) => w.close()));
+  await Promise.all([...enqueueQueues.values()].map((q) => q.close()));
   await connection.quit();
   process.exit(0);
 }

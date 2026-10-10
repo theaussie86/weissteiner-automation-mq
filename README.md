@@ -53,6 +53,7 @@ curl "https://mq.weissteiner-automation.com/admin/jobs?tenant=wachmacherei&statu
 | `GET /health` | keine | Redis/Postgres-Check |
 | `POST /jobs` | API-Key | Job einreichen (`type`, `payload`, `tenant?`, `callbackUrl?`) |
 | `GET /jobs/:queue/:id` | API-Key + Scope | Status + Ergebnis |
+| `DELETE /jobs/:jobId?queue=<name>` | API-Key + Scope | Wartenden/verzögerten Job abbrechen (aktiv ⇒ 409) |
 | `GET /files/:key?exp&sig` | HMAC-Signatur | Temp-URL-Auslieferung (24h TTL) |
 | `POST /admin/consumers` | Admin-Key | Consumer anlegen, Key einmalig im Klartext |
 | `GET /admin/jobs` | Admin-Key | Archiv-Abfrage (tenant/consumer/type/status) |
@@ -115,4 +116,4 @@ auf `reauth_required` - Connect-Flow erneut durchlaufen.
 
 ## Offen
 
-Nativer Scheduler steht (ADR-0008, `/admin/schedules`). Pinfinity-Migration läuft: `pinfinity.cleanup-published-images` steht (erster Tracer). Betrieb: `pinfinity-supabase`-Credential (`POST /admin/credentials`, `{name, provider:"apikey", data:{url, serviceRoleKey}}`) und Schedule (`POST /admin/schedules`, `payload:{supabaseCredential, dryRun}`) anlegen, ersten Lauf mit `dryRun:true`, dann pg_cron in Pinfinitys Supabase abdrehen. Nächste Job-Typen: `ai.generate-pin-metadata`, `pinterest.publish-pin`. Weitere Blöcke: Schedule-Läufe ins Job-Archiv schreiben (aktuell archiviert nur `POST /jobs`) · Flows/FlowProducer erst beim ersten echten Fan-in-Fall · Staging-Environment bei Bedarf.
+Nativer Scheduler steht (ADR-0008, `/admin/schedules`). Pinfinity-Migration läuft: `pinfinity.cleanup-published-images` und `pinfinity.publish-pin` (Bild-Pins, #10) stehen. Betrieb: `pinfinity-supabase`-Credential (`POST /admin/credentials`, `{name, provider:"apikey", data:{url, serviceRoleKey}}`) und Schedule (`POST /admin/schedules`, `payload:{supabaseCredential, dryRun}`) anlegen, ersten Lauf mit `dryRun:true`, dann pg_cron in Pinfinitys Supabase abdrehen. Nächste Job-Typen: `pinfinity.publish-pin` für Video (#11) und `pinfinity.send-publish-error-mail` (#12) — bis Letzterer registriert ist, loggt der `onFinalFailure`-Hook das Mail-Enqueue nur als `onFinalFailure.error`. Weitere Blöcke: Schedule-Läufe ins Job-Archiv schreiben (aktuell archiviert nur `POST /jobs`) · Flows/FlowProducer erst beim ersten echten Fan-in-Fall · Staging-Environment bei Bedarf.

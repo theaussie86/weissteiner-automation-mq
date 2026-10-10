@@ -27,6 +27,14 @@ Ein Container, der Jobs aus per Env-Var zugewiesenen Queues konsumiert. Queue-ag
 Ein mehrstufiger Ablauf aus verketteten Jobs (BullMQ Parent-Child). Ablöse-Ziel für n8n-Workflows.
 _Avoid_: Workflow (reserviert für n8n-Altbestand)
 
+**Retry**:
+Automatische Wiederholung eines fehlgeschlagenen Job-Versuchs mit Backoff. `attempts` zählt den ersten Versuch mit (`attempts: 4` = 1 Versuch plus 3 Retries). Nur retriable Fehler (z.B. 429, 5xx, Timeout) lösen einen Retry aus; ein `UnrecoverableError` überspringt sie.
+_Avoid_: Wiederholungsversuch, Neustart
+
+**Endgültiges Scheitern**:
+Der Zustand, in dem ein Job keinen weiteren Retry mehr bekommt (Versuche erschöpft oder `UnrecoverableError`). Erst jetzt laufen Archiv, Callback und der `onFinalFailure`-Hook (z.B. Fehler-Mail als Folge-Job).
+_Avoid_: Fehlschlag (meint auch einzelne Versuche)
+
 **Schedule**:
 Ein wiederkehrender, cron- oder intervallgesteuerter Trigger, der automatisch einen Job eines bestimmten Job-Typs einreicht. Definition liegt als Source of Truth in Postgres, wird beim API-Boot idempotent in den BullMQ-Scheduler ge-upsertet.
 _Avoid_: Cron-Job (zweideutig mit internen Repeatables wie Cleanup), Trigger
