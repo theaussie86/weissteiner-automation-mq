@@ -42,6 +42,7 @@ import "../jobs/media.js";
 import "../jobs/cleanup.js";
 import "../jobs/credentials-refresh.js";
 import "../jobs/pinfinity/cleanup.js";
+import "../jobs/pinfinity/reconcile-publish-jobs.js";
 
 const config = loadConfig();
 const redis = createRedis(config.REDIS_URL);
