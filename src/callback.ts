@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 
-// Callback (CONTEXT.md): Worker POSTet das Job-Ergebnis an die callbackUrl des
+// Callback (GLOSSARY.md): Worker POSTet das Job-Ergebnis an die callbackUrl des
 // Consumers. Nur Status + Temp-URL, nie Datei-Inhalte. Signatur via HMAC über
 // den Body (Header X-MQ-Signature), damit der Empfänger Echtheit prüfen kann.
 

@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-// Temp-URL (CONTEXT.md): signierte, ablaufende URL für Ergebnis-Dateien.
+// Temp-URL (GLOSSARY.md): signierte, ablaufende URL für Ergebnis-Dateien.
 // HMAC über "key:exp" — API und Worker teilen URL_SIGNING_SECRET via Env.
 
 function sign(secret: string, fileKey: string, exp: number): string {
