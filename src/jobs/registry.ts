@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { JobsOptions } from "bullmq";
 import type pg from "pg";
 
 export const QUEUES = ["media", "integrations"] as const;
@@ -16,6 +17,9 @@ export interface JobType<P extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   queue: QueueName;
   payloadSchema: P;
+  /** BullMQ-Retry-Defaults, die POST /jobs an add() durchreicht. Ohne Angabe: 1 Versuch. */
+  attempts?: number;
+  backoff?: JobsOptions["backoff"];
   process: (payload: z.infer<P>, ctx: JobContext) => Promise<unknown>;
 }
 

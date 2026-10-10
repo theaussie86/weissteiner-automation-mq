@@ -10,6 +10,7 @@ import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { generateApiKey, hashApiKey, hasQueueScope, safeEqual, type Consumer } from "../auth.js";
 import { archiveQueued } from "../archive.js";
+import { enqueueJob, parseJobOptions } from "../jobs/enqueue.js";
 import { createVolumeStorage } from "../storage/index.js";
 import { verifyTempUrl } from "../storage/temp-url.js";
 import {
@@ -168,8 +169,18 @@ app.post<{ Body: { name: string; queueScopes: string[] } }>(
 
 const TENANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
-app.post<{ Body: { type: string; payload?: unknown; tenant?: string; callbackUrl?: string } }>("/jobs", async (request, reply) => {
-  const { type, payload, tenant, callbackUrl } = request.body ?? {};
+app.post<{
+  Body: {
+    type: string;
+    payload?: unknown;
+    tenant?: string;
+    callbackUrl?: string;
+    delay?: unknown;
+    jobId?: unknown;
+    onExisting?: unknown;
+  };
+}>("/jobs", async (request, reply) => {
+  const { type, payload, tenant, callbackUrl, delay, jobId, onExisting } = request.body ?? {};
   const jobType = type ? getJobType(type) : undefined;
   if (!jobType) {
     return reply.code(400).send({ error: `Unknown job type: ${type}` });
@@ -183,25 +194,42 @@ app.post<{ Body: { type: string; payload?: unknown; tenant?: string; callbackUrl
   if (callbackUrl !== undefined && !/^https?:\/\//.test(callbackUrl)) {
     return reply.code(422).send({ error: "Invalid callbackUrl: must be http(s) URL" });
   }
+  const options = parseJobOptions({ delay, jobId, onExisting });
+  if (!options.ok) {
+    return reply.code(422).send({ error: options.error });
+  }
   const parsed = jobType.payloadSchema.safeParse(payload ?? {});
   if (!parsed.success) {
     return reply.code(422).send({ error: "Invalid payload", issues: parsed.error.issues });
   }
-  const job = await getQueue(jobType.queue).add(jobType.name, {
-    payload: parsed.data,
-    consumer: request.consumer!.name,
-    tenant: tenant ?? null,
-    callbackUrl: callbackUrl ?? null,
-  });
+  const result = await enqueueJob(
+    getQueue(jobType.queue),
+    jobType.name,
+    {
+      payload: parsed.data,
+      consumer: request.consumer!.name,
+      tenant: tenant ?? null,
+      callbackUrl: callbackUrl ?? null,
+    },
+    { ...options.value, attempts: jobType.attempts, backoff: jobType.backoff },
+  );
+  if (result.outcome === "active") {
+    return reply.code(409).send({ error: `Job already active: ${options.value.jobId}`, state: "active" });
+  }
+  if (result.outcome === "deduplicated") {
+    return reply
+      .code(200)
+      .send({ jobId: result.job.id, queue: jobType.queue, type: jobType.name, tenant: tenant ?? null, deduplicated: true });
+  }
   await archiveQueued(db, {
-    jobId: job.id!,
+    jobId: result.job.id!,
     queue: jobType.queue,
     type: jobType.name,
     consumer: request.consumer!.name,
     tenant,
     payload: parsed.data,
   });
-  return reply.code(202).send({ jobId: job.id, queue: jobType.queue, type: jobType.name, tenant: tenant ?? null });
+  return reply.code(202).send({ jobId: result.job.id, queue: jobType.queue, type: jobType.name, tenant: tenant ?? null });
 });
 
 // Job-Archiv-Abfrage hinter ADMIN_KEY: Filter nach Mandant, Consumer, Typ, Status (ADR-0007).
