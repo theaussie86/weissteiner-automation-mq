@@ -10,7 +10,7 @@ Niedrigste Komplexität (nur Supabase DB + Storage, kein externer Token, keine K
 
 ## Domänensprache
 
-Siehe `CONTEXT.md`. Relevant: **Job**, **Job-Typ**, **Schedule** (ADR-0008), **Credential** / **Credential Store** (ADR-0002), **Consumer**, **Queue**.
+Siehe `GLOSSARY.md`. Relevant: **Job**, **Job-Typ**, **Schedule** (ADR-0008), **Credential** / **Credential Store** (ADR-0002), **Consumer**, **Queue**.
 
 Neuer Begriff implizit: ein **Pinfinity-Job** ist ein Job-Typ, dessen `process` gegen Pinfinitys eigene Supabase-Instanz arbeitet (nicht die MQ-Postgres). Tabellen-/Bucket-Namen (`pins`, `pin-images`) sind Pinfinity-spezifisch und im Job hart codiert.
 
