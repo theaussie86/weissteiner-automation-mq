@@ -18,6 +18,7 @@ import "../jobs/pinfinity/cleanup.js";
 import "../jobs/pinfinity/publish-pin.js";
 import "../jobs/pinfinity/send-publish-error-mail.js";
 import "../jobs/pinfinity/reconcile-publish-jobs.js";
+import "../jobs/pinfinity/cleanup-publish-events.js";
 
 const config = loadConfig();
 const connection = createRedis(config.REDIS_URL);
