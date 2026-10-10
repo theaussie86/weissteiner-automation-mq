@@ -98,7 +98,7 @@ declare module "fastify" {
   }
 }
 
-// Admin-Guard (App-Secret, CONTEXT.md): true = durchgelassen, sonst ist die Reply schon gesendet.
+// Admin-Guard (App-Secret, GLOSSARY.md): true = durchgelassen, sonst ist die Reply schon gesendet.
 function requireAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
   const adminKey = request.headers["x-admin-key"];
   if (!config.ADMIN_KEY) {

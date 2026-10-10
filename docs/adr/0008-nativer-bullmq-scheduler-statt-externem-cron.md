@@ -6,5 +6,5 @@ Begründung: Die Plattform existiert, um n8n **und** Trigger.dev abzulösen — 
 
 ## Consequences
 
-- Schedules sind ein neues Domänen-Konzept (**Schedule** in CONTEXT.md), abgegrenzt vom einmaligen **Job** und vom internen Repeatable (Cleanup/Refresh, weiter hardcoded).
+- Schedules sind ein neues Domänen-Konzept (**Schedule** in GLOSSARY.md), abgegrenzt vom einmaligen **Job** und vom internen Repeatable (Cleanup/Refresh, weiter hardcoded).
 - Migrierte Consumer (z.B. Pinfinity) verlieren ihre pg_cron-Abhängigkeit; der Poll (z.B. Auto-Publish alle 10 min) läuft als plattform-eigener Schedule.

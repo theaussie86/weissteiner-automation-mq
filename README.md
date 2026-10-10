@@ -2,7 +2,7 @@
 
 BullMQ-basierte Job-Plattform: führt FFmpeg-Verarbeitung und Drittdienst-Integrationen als asynchrone Jobs aus und löst schrittweise die bestehenden n8n-Instanzen ab.
 
-Live: `https://mq.weissteiner-automation.com` · Domänensprache: [CONTEXT.md](CONTEXT.md) · Architektur-Entscheidungen: [docs/adr/](docs/adr/)
+Live: `https://mq.weissteiner-automation.com` · Domänensprache: [GLOSSARY.md](GLOSSARY.md) · Architektur-Entscheidungen: [docs/adr/](docs/adr/)
 
 ## Architektur
 

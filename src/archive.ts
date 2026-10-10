@@ -1,6 +1,6 @@
 import type pg from "pg";
 
-// Job-Archiv (CONTEXT.md): persistierte Job-Historie, unabhängig vom flüchtigen
+// Job-Archiv (GLOSSARY.md): persistierte Job-Historie, unabhängig vom flüchtigen
 // Redis-State. Archiv-Schreibfehler dürfen nie die Job-Verarbeitung brechen —
 // alle Funktionen loggen und schlucken Fehler.
 

@@ -10,7 +10,7 @@ const envSchema = z.object({
     .default("media,integrations")
     .transform((s) => s.split(",").map((q) => q.trim()).filter(Boolean)),
   FILES_DIR: z.string().default("/data/files"),
-  // App-Secret (CONTEXT.md): schaltet die /admin-Routen frei; ohne Wert sind sie deaktiviert.
+  // App-Secret (GLOSSARY.md): schaltet die /admin-Routen frei; ohne Wert sind sie deaktiviert.
   // Compose-Interpolation liefert "" wenn unbesetzt — leer zählt als nicht gesetzt.
   ADMIN_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(16).optional()),
   // App-Secrets für Temp-URLs: Signatur-Key (API + Worker identisch) und öffentliche Basis-URL.
