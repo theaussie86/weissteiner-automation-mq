@@ -13,7 +13,7 @@ Gründe: Pinterest antwortet gelegentlich mit 5xx oder 429, die Edge Function ha
 - **Double-Post-Schutz:** Schlägt das DB-Update nach erfolgreichem Pinterest-POST fehl, wird nicht erneut gepostet, sondern nur das Update wiederholt.
 - **Rate-Limit:** 10 s Abstand pro Pinterest-Connection, per Redis und `moveToDelayed` (`DelayedError`), damit parallele Jobs derselben Connection sich nicht überholen.
 - **Reconcile als Sicherheitsnetz:** `pinfinity.reconcile-publish-jobs` läuft als Schedule, reiht fehlende Jobs für Kandidaten (`status = metadata_created`, `scheduled_at` gesetzt, `pinterest_pin_id` null) mit `onExisting: skip` nach und füllt so auch den Bestand. Unterstützt `dryRun`.
-- **Kein Callback nötig:** Der Worker schreibt das Ergebnis direkt in Pinfintys Supabase (Credential `pinfinity-supabase`, siehe ADR-0009). Das Pinterest-Token bleibt in Supabase Vault.
+- **Kein Callback nötig:** Der Worker schreibt das Ergebnis direkt in Pinfinitys Supabase (Credential `pinfinity-supabase`, siehe ADR-0009). Das Pinterest-Token bleibt in Supabase Vault.
 
 ## Consequences
 
