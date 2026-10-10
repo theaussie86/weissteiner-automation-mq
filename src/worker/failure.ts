@@ -9,7 +9,7 @@ export interface FailableJob {
   id?: string;
   name?: string;
   attemptsMade: number;
-  opts: { attempts?: number };
+  opts: { attempts?: number; backoff?: number | { type?: string; delay?: number } };
 }
 
 /**
@@ -39,8 +39,39 @@ export interface FailedHandlerDeps {
    * `onFinalFailure.error` geloggt — sie brechen die Fehlerbehandlung nicht.
    */
   onFinalFailure?: (() => void | Promise<void>) | undefined;
+  /**
+   * Hook des Job-Typs auf einen fehlgeschlagenen Versuch, dem noch ein Retry folgt
+   * (Ticket #19). Wird nur bei einem Zwischenfehler aufgerufen, nie beim endgültigen
+   * Scheitern. Fehler werden wie bei onFinalFailure geschluckt (`onRetryScheduled.error`)
+   * und dürfen den bereits von BullMQ eingeplanten Retry nicht verhindern.
+   */
+  onRetryScheduled?: (() => void | Promise<void>) | undefined;
   /** Log-Ausgabe (Default console.error). */
   log?: (line: string) => void;
+}
+
+// Ruft einen Job-Typ-Hook auf und schluckt dessen Fehler (synchron oder als Rejection),
+// damit die Fehlerbehandlung weiterläuft. Geloggt wird unter `<event>.error`.
+function runHookSwallowing(
+  hook: () => void | Promise<void>,
+  event: string,
+  queue: string,
+  jobId: string | undefined,
+  type: string | undefined,
+  log: (line: string) => void,
+): void {
+  const logHookError = (hookErr: unknown) =>
+    log(JSON.stringify({ event, queue, jobId, type, error: (hookErr as Error).message }));
+  try {
+    // Synchron aufrufen, damit der Hook nachweisbar genau einmal läuft; eine
+    // zurückgegebene Promise fangen wir zusätzlich ab (fire-and-forget wie der Callback).
+    const result = hook();
+    if (result && typeof (result as Promise<unknown>).then === "function") {
+      void (result as Promise<unknown>).catch(logHookError);
+    }
+  } catch (hookErr) {
+    logHookError(hookErr);
+  }
 }
 
 /**
@@ -61,6 +92,9 @@ export function handleFailed(job: FailableJob | undefined, err: Error, deps: Fai
         error: err.message,
       }),
     );
+    if (deps.onRetryScheduled) {
+      runHookSwallowing(deps.onRetryScheduled, "onRetryScheduled.error", deps.queue, job?.id, job?.name, log);
+    }
     return;
   }
   log(JSON.stringify({ event: "failed", queue: deps.queue, jobId: job?.id, type: job?.name, error: err.message }));
@@ -69,25 +103,6 @@ export function handleFailed(job: FailableJob | undefined, err: Error, deps: Fai
     deps.notifyFailed(err.message);
   }
   if (deps.onFinalFailure) {
-    const logHookError = (hookErr: unknown) =>
-      log(
-        JSON.stringify({
-          event: "onFinalFailure.error",
-          queue: deps.queue,
-          jobId: job?.id,
-          type: job?.name,
-          error: (hookErr as Error).message,
-        }),
-      );
-    try {
-      // Synchron aufrufen, damit der Hook nachweisbar genau einmal läuft; eine
-      // zurückgegebene Promise fangen wir zusätzlich ab (fire-and-forget wie der Callback).
-      const result = deps.onFinalFailure();
-      if (result && typeof (result as Promise<unknown>).then === "function") {
-        void (result as Promise<unknown>).catch(logHookError);
-      }
-    } catch (hookErr) {
-      logHookError(hookErr);
-    }
+    runHookSwallowing(deps.onFinalFailure, "onFinalFailure.error", deps.queue, job?.id, job?.name, log);
   }
 }

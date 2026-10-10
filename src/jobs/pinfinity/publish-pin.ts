@@ -21,6 +21,8 @@ import {
 import { downloadToTempFile, type DownloadedFile } from "../../media/download.js";
 import type { ContextEnqueue } from "../enqueue.js";
 import { enforcePinterestRateLimit, type RateLimitContext } from "./rate-limit.js";
+import { recordPublishEvent, supabasePublishEventStore, type PublishEventStore } from "./publish-events.js";
+import type { FailableJob } from "../../worker/failure.js";
 
 const IMAGE_BUCKET = "pin-images";
 const VIDEO_BUCKET = "pin-videos";
@@ -41,6 +43,8 @@ const MS_PER_SECOND = 1_000;
 
 export interface PublishablePin {
   id: string;
+  /** Projekt des Pins, für die Zuordnung der Veröffentlichungs-Ereignisse (#19). */
+  blog_project_id: string | null;
   status: string;
   scheduled_at: string | null;
   pinterest_pin_id: string | null;
@@ -242,6 +246,20 @@ export interface PublishPinOptions {
   /** Polling-Overrides für Video-Verarbeitung (Tests). */
   videoPollIntervalMs?: number;
   videoPollTimeoutMs?: number;
+  /**
+   * Schreibt Veröffentlichungs-Ereignisse nach pin_publish_events (Ticket #19). Fehlt es
+   * (z.B. in reinen Logik-Tests), werden keine Ereignisse geschrieben. Der Worker setzt es
+   * mit dem supabase-js-Adapter und dem Versuchszähler des laufenden Jobs.
+   */
+  events?: PublishEventContext;
+}
+
+export interface PublishEventContext {
+  store: PublishEventStore;
+  /** Laufender Versuch (1-basiert) = job.attemptsMade + 1. */
+  attempt: number;
+  /** job.opts.attempts. */
+  maxAttempts: number;
 }
 
 export type PublishPinResult = { skipped: string } | { published: true; pinterestPinId: string };
@@ -287,6 +305,18 @@ export async function publishPin(
     await enforcePinterestRateLimit(options.rateLimit, pin.connection_id);
   }
 
+  // Der Versuch fängt jetzt tatsächlich an: nach Stale-Guard und Rate-Limit-Wartezeit.
+  // Ein per DelayedError verschobener Lauf kommt hier nicht an (kein Doppeleintrag).
+  if (options.events) {
+    await recordPublishEvent(options.events.store, {
+      pinId: pin.id,
+      blogProjectId: pin.blog_project_id ?? "",
+      type: "attempt_started",
+      attempt: options.events.attempt,
+      maxAttempts: options.events.maxAttempts,
+    });
+  }
+
   const created = isVideo
     ? await publishVideoPin(store, pinterest, pin, token.token, pin.connection_id, options)
     : await publishImagePin(store, pinterest, pin, token.token, pin.connection_id);
@@ -301,7 +331,19 @@ export async function publishPin(
       pinterestPinUrl,
       publishedAt,
     });
-    if (!result.error) return { published: true, pinterestPinId: created.id };
+    if (!result.error) {
+      if (options.events) {
+        await recordPublishEvent(options.events.store, {
+          pinId: pin.id,
+          blogProjectId: pin.blog_project_id ?? "",
+          type: "succeeded",
+          attempt: options.events.attempt,
+          maxAttempts: options.events.maxAttempts,
+          details: { pinterest_pin_id: created.id },
+        });
+      }
+      return { published: true, pinterestPinId: created.id };
+    }
     if (attempt < DB_UPDATE_ATTEMPTS) await sleep(DB_UPDATE_DELAY_MS);
   }
   throw new UnrecoverableError(`Pin auf Pinterest angelegt (${created.id}), DB-Update fehlgeschlagen`);
@@ -318,16 +360,94 @@ const payloadSchema = z.object({
 
 export type PublishPinPayload = z.infer<typeof payloadSchema>;
 
-// onFinalFailure (Ticket #9/#10): Pin atomar auf error setzen und die Fehler-Mail als
-// Folge-Job einreihen. Fehler hier schluckt der Worker (event onFinalFailure.error).
+// HTTP-Status eines Pinterest-Fehlers, falls bekannt — sonst undefined (z.B. Netz/Timeout).
+function httpStatusOf(error: Error): number | undefined {
+  return error instanceof PinterestApiError ? error.status : undefined;
+}
+
+// Projekt-Zuordnung für ein Ereignis: beste Mühe. loadPin kann scheitern (DB) — das darf
+// weder Mailversand noch Retry blockieren, daher Fehler verschlucken und "" zurückgeben.
+async function loadBlogProjectId(store: PinStore, pinId: string): Promise<string> {
+  try {
+    const pin = await store.loadPin(pinId);
+    return pin?.blog_project_id ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Nächster Retry-Zeitpunkt aus der BullMQ-Backoff-Konfiguration und den bisher gemachten
+ * Versuchen. Exponentiell: delay * 2^(attemptsMade - 1) (delay 5 min => +5, +10, +20 min),
+ * fixed: immer delay. Ohne Backoff/Delay null.
+ */
+export function computeNextRetryAt(
+  backoff: number | { type?: string; delay?: number } | undefined,
+  attemptsMade: number,
+  now: Date,
+): string | null {
+  const cfg = typeof backoff === "number" ? { type: "fixed", delay: backoff } : backoff;
+  if (!cfg?.delay) return null;
+  const factor = cfg.type === "exponential" ? Math.pow(2, Math.max(0, attemptsMade - 1)) : 1;
+  return new Date(now.getTime() + cfg.delay * factor).toISOString();
+}
+
+// onRetryScheduled (Ticket #19): ein Versuch scheiterte mit wiederholbarem Fehler, ein
+// Retry folgt noch. Schreibt retry_scheduled. attemptsMade ist der gerade gescheiterte
+// Versuch. Nur ein Ereignis, keine Seiteneffekte — der Retry ist bereits eingeplant.
+export async function handlePublishPinRetryScheduled(
+  store: PinStore,
+  eventStore: PublishEventStore,
+  payload: PublishPinPayload,
+  error: Error,
+  job: FailableJob,
+  now: () => Date = () => new Date(),
+): Promise<void> {
+  const blogProjectId = await loadBlogProjectId(store, payload.pinId);
+  const httpStatus = httpStatusOf(error);
+  const nextRetryAt = computeNextRetryAt(job.opts.backoff, job.attemptsMade, now());
+  await recordPublishEvent(eventStore, {
+    pinId: payload.pinId,
+    blogProjectId,
+    type: "retry_scheduled",
+    attempt: job.attemptsMade,
+    maxAttempts: job.opts.attempts ?? 1,
+    message: error.message,
+    details: {
+      error_class: "retryable",
+      ...(httpStatus != null ? { http_status: httpStatus } : {}),
+      ...(nextRetryAt ? { next_retry_at: nextRetryAt } : {}),
+    },
+  });
+}
+
+// onFinalFailure (Ticket #9/#10, Ereignis #19): Pin atomar auf error setzen, failed_final
+// schreiben und die Fehler-Mail als Folge-Job einreihen. Fehler hier schluckt der Worker
+// (event onFinalFailure.error). error_class unterscheidet erschöpfte Retries (retryable)
+// von einem nicht wiederholbaren Fehler (unrecoverable).
 export async function handlePublishPinFinalFailure(
   store: PinStore,
+  eventStore: PublishEventStore,
   payload: PublishPinPayload,
   error: Error,
   enqueue: ContextEnqueue,
-  jobId: string | undefined,
+  job: FailableJob,
 ): Promise<void> {
+  const blogProjectId = await loadBlogProjectId(store, payload.pinId);
   await store.markErrorIfPending(payload.pinId, error.message);
+  const httpStatus = httpStatusOf(error);
+  await recordPublishEvent(eventStore, {
+    pinId: payload.pinId,
+    blogProjectId,
+    type: "failed_final",
+    attempt: job.attemptsMade,
+    maxAttempts: job.opts.attempts ?? 1,
+    message: error.message,
+    details: {
+      error_class: error instanceof UnrecoverableError ? "unrecoverable" : "retryable",
+      ...(httpStatus != null ? { http_status: httpStatus } : {}),
+    },
+  });
   await enqueue(
     "pinfinity.send-publish-error-mail",
     {
@@ -336,7 +456,7 @@ export async function handlePublishPinFinalFailure(
       pinId: payload.pinId,
       errorMessage: error.message,
     },
-    { jobId: `publish-error-mail-${payload.pinId}-${jobId}` },
+    { jobId: `publish-error-mail-${payload.pinId}-${job.id}` },
   );
 }
 
@@ -348,7 +468,7 @@ export function supabasePinStore(sb: SupabaseClient, supabaseUrl: string): PinSt
       const { data, error } = await sb
         .from("pins")
         .select(
-          "id, status, scheduled_at, pinterest_pin_id, pinterest_board_id, media_type, image_path, video_path, cover_image_path, cover_keyframe_seconds, title, description, alt_text, alternate_url, ai_modified, synthetic_performer, blog_articles(url), blog_projects(pinterest_connection_id)",
+          "id, blog_project_id, status, scheduled_at, pinterest_pin_id, pinterest_board_id, media_type, image_path, video_path, cover_image_path, cover_keyframe_seconds, title, description, alt_text, alternate_url, ai_modified, synthetic_performer, blog_articles(url), blog_projects(pinterest_connection_id)",
         )
         .eq("id", pinId)
         .maybeSingle();
@@ -359,6 +479,7 @@ export function supabasePinStore(sb: SupabaseClient, supabaseUrl: string): PinSt
       const project = row.blog_projects as { pinterest_connection_id?: string | null } | null | undefined;
       return {
         id: row.id as string,
+        blog_project_id: (row.blog_project_id as string | null) ?? null,
         status: row.status as string,
         scheduled_at: (row.scheduled_at as string | null) ?? null,
         pinterest_pin_id: (row.pinterest_pin_id as string | null) ?? null,
@@ -436,14 +557,25 @@ registerJobType({
     const creds = await ctx.getCredential(payload.supabaseCredential);
     const sb = createSupabaseClient(creds);
     const store = supabasePinStore(sb, creds.url as string);
+    const options: PublishPinOptions = {};
     // defer gibt es nur im Worker-Prozess (nicht in onFinalFailure) => Rate-Limit aktiv.
-    const options: PublishPinOptions = ctx.defer ? { rateLimit: { redis: ctx.redis, defer: ctx.defer } } : {};
+    if (ctx.defer) options.rateLimit = { redis: ctx.redis, defer: ctx.defer };
+    // Versuchszähler ebenfalls nur im Worker-Prozess gesetzt => Ereignisse schreiben.
+    if (ctx.attempt) {
+      options.events = { store: supabasePublishEventStore(sb), attempt: ctx.attempt, maxAttempts: ctx.maxAttempts ?? 1 };
+    }
     return publishPin(store, createPinterestClient(), { pinId: payload.pinId, scheduledAt: payload.scheduledAt }, options);
+  },
+  onRetryScheduled: async (payload, error, ctx, job) => {
+    const creds = await ctx.getCredential(payload.supabaseCredential);
+    const sb = createSupabaseClient(creds);
+    const store = supabasePinStore(sb, creds.url as string);
+    await handlePublishPinRetryScheduled(store, supabasePublishEventStore(sb), payload, error, job);
   },
   onFinalFailure: async (payload, error, ctx, job) => {
     const creds = await ctx.getCredential(payload.supabaseCredential);
     const sb = createSupabaseClient(creds);
     const store = supabasePinStore(sb, creds.url as string);
-    await handlePublishPinFinalFailure(store, payload, error, ctx.enqueue, job.id);
+    await handlePublishPinFinalFailure(store, supabasePublishEventStore(sb), payload, error, ctx.enqueue, job);
   },
 });
