@@ -6,6 +6,6 @@ Begründung: Der Credential Store gibt per Design nie Klartext-Secrets über HTT
 
 ## Consequences
 
-- MQ besitzt den Pinterest-OAuth-Refresh nicht; das bleibt bei der App/Vault, wo es heute funktioniert.
+- MQ besitzt die Pinterest-Tokens nicht. Den Refresh führt MQ seit ADR-0011 aus, die Tokens bleiben im Vault.
 - Kein eigener `pinterest`-Provider im Credential Store nötig — der Migrations-Scope sinkt auf Supabase-apikey (existiert) plus die Job-Typen.
 - Wird ein Token später **nur** noch von MQ gebraucht (App-Pfad abgeschaltet), kann es regulär in den Credential Store wandern — diese Entscheidung gilt nur für den geteilten Zustand.
