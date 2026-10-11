@@ -208,15 +208,3 @@ export async function deleteCredential(pool: CredentialPool, name: string): Prom
   const result = await pool.query("delete from credential where name = $1", [name]);
   return (result.rowCount ?? 0) > 0;
 }
-
-// Für den Background-Refresh: Google-Credentials, die bald ablaufen.
-export async function listExpiringCredentials(pool: CredentialPool, withinMs: number): Promise<string[]> {
-  const result = await pool.query(
-    `select name from credential
-     where provider = 'google' and status = 'ok'
-       and token_expires_at is not null
-       and token_expires_at < now() + ($1 || ' milliseconds')::interval`,
-    [String(withinMs)],
-  );
-  return result.rows.map((r: { name: string }) => r.name);
-}

@@ -9,7 +9,7 @@ export const QUEUES = ["media", "integrations"] as const;
 export type QueueName = (typeof QUEUES)[number];
 
 // Worker-seitiger Kontext: Credential-Zugriff und DB für Jobs, die mehr brauchen
-// (z.B. credentials.refresh). API ruft process nie auf.
+// (z.B. Credential-Zugriff, Folge-Jobs). API ruft process nie auf.
 export interface JobContext {
   db: pg.Pool;
   getCredential: (name: string) => Promise<Record<string, unknown>>;

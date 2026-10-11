@@ -99,8 +99,7 @@ Endpoints (Admin: `x-admin-key`):
 - `POST /admin/credentials/shopify/connect` (`{name, app, shop, scopes[]}`) - liefert `authUrl`, Consent im Browser durchklicken; `app` referenziert eine zuvor angelegte OAuth-App
 - `GET /credentials/callback/<provider>` - öffentlich, durch single-use State geschützt; Redirect-URI je Provider ist `<PUBLIC_BASE_URL>/credentials/callback/<provider>` (zu hinterlegen in der Google-/Shopify-App)
 
-OAuth-Tokens werden lazy beim Lesen refresht (Row-Lock) plus alle 30 min proaktiv
-(`credentials.refresh`, Horizont 45 min). Schlägt ein Refresh fehl, steht das Credential
+OAuth-Tokens werden lazy beim Lesen refresht (Row-Lock). Schlägt ein Refresh fehl, steht das Credential
 auf `reauth_required` - Connect-Flow erneut durchlaufen.
 
 - Push auf `main` → GitHub Actions (Typecheck, Tests, Docker-Build) → Coolify-Webhook deployt automatisch. Branch Protection verlangt grüne Checks.
