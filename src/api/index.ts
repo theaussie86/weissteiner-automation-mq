@@ -37,13 +37,7 @@ import {
 } from "../schedules/store.js";
 import { isCronShape, isValidTimezone } from "../schedules/validate.js";
 import { removeScheduler, upsertScheduler } from "../schedules/sync.js";
-import "../jobs/ping.js";
-import "../jobs/media.js";
-import "../jobs/cleanup.js";
-import "../jobs/pinfinity/cleanup.js";
-import "../jobs/pinfinity/reconcile-publish-jobs.js";
-import "../jobs/pinfinity/cleanup-publish-events.js";
-import "../jobs/pinfinity/refresh-pinterest-tokens.js";
+import "../jobs/all.js";
 
 const config = loadConfig();
 const redis = createRedis(config.REDIS_URL);

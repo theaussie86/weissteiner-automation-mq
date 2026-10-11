@@ -11,14 +11,7 @@ import { sendCallback } from "../callback.js";
 import { getCredential, type Refresher } from "../credentials/store.js";
 import { refreshAccessToken } from "../credentials/providers/google.js";
 import type { JobContext } from "../jobs/registry.js";
-import "../jobs/ping.js";
-import "../jobs/media.js";
-import "../jobs/pinfinity/cleanup.js";
-import "../jobs/pinfinity/publish-pin.js";
-import "../jobs/pinfinity/send-publish-error-mail.js";
-import "../jobs/pinfinity/reconcile-publish-jobs.js";
-import "../jobs/pinfinity/cleanup-publish-events.js";
-import "../jobs/pinfinity/refresh-pinterest-tokens.js";
+import "../jobs/all.js";
 
 const config = loadConfig();
 const connection = createRedis(config.REDIS_URL);
