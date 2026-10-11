@@ -143,6 +143,20 @@ describe("publishPin stale-guard", () => {
     const result = await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, noSleep);
     expect(result).toEqual({ skipped: "scheduled_at changed" });
   });
+
+  it("gleicher Zeitpunkt in PostgREST-Schreibweise (+00:00) => nicht skipped", async () => {
+    const { store } = fakeStore(basePin({ scheduled_at: "2026-10-10T12:00:00.000+00:00" }));
+    const { client } = fakePinterest(async () => ({ id: "x" }));
+    const result = await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, noSleep);
+    expect(result).toEqual({ published: true, pinterestPinId: "x" });
+  });
+
+  it("scheduled_at null => skipped", async () => {
+    const { store } = fakeStore(basePin({ scheduled_at: null }));
+    const { client } = fakePinterest(async () => ({ id: "x" }));
+    const result = await publishPin(store, client, { pinId: "pin-1", scheduledAt: SCHEDULED_AT }, noSleep);
+    expect(result).toEqual({ skipped: "scheduled_at changed" });
+  });
 });
 
 describe("publishPin Pflichtfelder (unrecoverable)", () => {
