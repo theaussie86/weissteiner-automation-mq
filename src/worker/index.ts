@@ -4,7 +4,6 @@ import { loadConfig } from "../config.js";
 import { createRedis } from "../redis.js";
 import { getJobType } from "../jobs/registry.js";
 import { CLEANUP_JOB_NAME } from "../jobs/cleanup.js";
-import { CREDENTIALS_REFRESH_JOB_NAME } from "../jobs/credentials-refresh.js";
 import { archiveFinished, archiveQueued } from "../archive.js";
 import { handleFailed, type FailableJob } from "./failure.js";
 import { createContextEnqueue } from "../jobs/enqueue.js";
@@ -97,14 +96,11 @@ if (config.WORKER_QUEUES.includes("media")) {
   await mediaQueue.close();
 }
 
-// Repeatable Background-Refresh (Spec) — nur sinnvoll wenn der Store konfiguriert ist.
-if (config.WORKER_QUEUES.includes("integrations") && config.CREDENTIAL_MASTER_KEY) {
+// Der Google-Background-Refresh (credentials.refresh) ist entfallen (nur Lazy-Refresh). Einmalig den
+// verwaisten Scheduler aus Redis räumen; idempotent, kann nach einem Deploy wieder raus.
+if (config.WORKER_QUEUES.includes("integrations")) {
   const integrationsQueue = new Queue("integrations", { connection });
-  await integrationsQueue.upsertJobScheduler(
-    `${CREDENTIALS_REFRESH_JOB_NAME}-30min`,
-    { every: 1_800_000 },
-    { name: CREDENTIALS_REFRESH_JOB_NAME },
-  );
+  await integrationsQueue.removeJobScheduler("credentials.refresh-30min");
   await integrationsQueue.close();
 }
 
