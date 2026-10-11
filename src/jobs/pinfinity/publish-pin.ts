@@ -278,7 +278,10 @@ export async function publishPin(
   if (!pin) return { skipped: "pin not found" };
   if (pin.status !== "metadata_created") return { skipped: `status is ${pin.status}` };
   if (pin.pinterest_pin_id) return { skipped: "already has pinterest_pin_id" };
-  if (pin.scheduled_at !== payload.scheduledAt) return { skipped: "scheduled_at changed" };
+  // Instants vergleichen, nicht Strings: Payload kommt als "...Z", PostgREST liefert "...+00:00".
+  if (!pin.scheduled_at || Date.parse(pin.scheduled_at) !== Date.parse(payload.scheduledAt)) {
+    return { skipped: "scheduled_at changed" };
+  }
 
   // Pflichtfelder: fehlen sie, hilft kein Retry (Unrecoverable). Meldungen wie heute.
   if (!pin.connection_id) throw new UnrecoverableError("No Pinterest account connected to this project");
