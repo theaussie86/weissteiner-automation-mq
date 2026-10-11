@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPinterestClient, PinterestApiError, type PinterestVideoRegistration } from "./pinterest.js";
+import {
+  createPinterestClient,
+  PinterestApiError,
+  refreshPinterestToken,
+  type PinterestVideoRegistration,
+} from "./pinterest.js";
 
 describe("createPinterestClient createPin", () => {
   it("postet nach /v5/pins und liefert die id", async () => {
@@ -96,5 +101,30 @@ describe("createPinterestClient getMediaStatus", () => {
     const status = await client.getMediaStatus("tok", "m1");
     expect(status).toBe("succeeded");
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.pinterest.com/v5/media/m1");
+  });
+});
+
+describe("refreshPinterestToken", () => {
+  const app = { clientId: "id", clientSecret: "secret" };
+
+  it("postet refresh_token-Grant mit Basic-Auth und berechnet expiresAt", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ access_token: "a", refresh_token: "r", expires_in: 3600 }), { status: 200 }),
+    );
+    const now = new Date("2026-01-01T00:00:00Z");
+    const result = await refreshPinterestToken(app, "old-r", fetchMock as unknown as typeof fetch, () => now);
+    expect(result).toEqual({ accessToken: "a", refreshToken: "r", expiresAt: new Date("2026-01-01T01:00:00Z") });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.pinterest.com/v5/oauth/token");
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Basic ${Buffer.from("id:secret").toString("base64")}`);
+    expect(init.body).toBe("grant_type=refresh_token&refresh_token=old-r");
+  });
+
+  it("Fehlerantwort => PinterestApiError mit Status", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ message: "invalid_grant" }), { status: 400 }));
+    const err = await refreshPinterestToken(app, "x", fetchMock as unknown as typeof fetch).catch((e) => e);
+    expect(err).toBeInstanceOf(PinterestApiError);
+    expect(err.status).toBe(400);
   });
 });

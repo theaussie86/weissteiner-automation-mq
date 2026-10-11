@@ -136,3 +136,36 @@ export function createPinterestClient(fetchImpl: typeof fetch = fetch): Pinteres
     },
   };
 }
+
+// Antwort von POST /v5/oauth/token (grant_type refresh_token). expires_in in Sekunden.
+export interface PinterestTokenResponse {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: Date;
+}
+
+// Tauscht einen Refresh-Token gegen ein neues Token-Paar. Client-ID/Secret per Basic-Auth.
+// Fehler als PinterestApiError: 4xx (z.B. invalid_grant) ist persistent, 5xx/Netzwerk transient.
+export async function refreshPinterestToken(
+  app: { clientId: string; clientSecret: string },
+  refreshToken: string,
+  fetchImpl: typeof fetch = fetch,
+  now: () => Date = () => new Date(),
+): Promise<PinterestTokenResponse> {
+  const basicAuth = Buffer.from(`${app.clientId}:${app.clientSecret}`).toString("base64");
+  const response = await fetchImpl(`${API_BASE}/oauth/token`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basicAuth}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }).toString(),
+  });
+  if (!response.ok) throw await toPinterestApiError(response);
+  const json = (await response.json()) as { access_token: string; refresh_token: string; expires_in: number };
+  return {
+    accessToken: json.access_token,
+    refreshToken: json.refresh_token,
+    expiresAt: new Date(now().getTime() + json.expires_in * 1000),
+  };
+}

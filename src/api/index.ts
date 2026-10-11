@@ -44,6 +44,7 @@ import "../jobs/credentials-refresh.js";
 import "../jobs/pinfinity/cleanup.js";
 import "../jobs/pinfinity/reconcile-publish-jobs.js";
 import "../jobs/pinfinity/cleanup-publish-events.js";
+import "../jobs/pinfinity/refresh-pinterest-tokens.js";
 
 const config = loadConfig();
 const redis = createRedis(config.REDIS_URL);
