@@ -9,3 +9,4 @@ import "./pinfinity/send-publish-error-mail.js";
 import "./pinfinity/reconcile-publish-jobs.js";
 import "./pinfinity/cleanup-publish-events.js";
 import "./pinfinity/refresh-pinterest-tokens.js";
+import "./slack/post-message.js";

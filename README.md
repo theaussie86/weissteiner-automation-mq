@@ -61,7 +61,9 @@ curl "https://mq.weissteiner-automation.com/admin/jobs?tenant=wachmacherei&statu
 | `GET /admin/schedules` | Admin-Key | Schedules auflisten |
 | `DELETE /admin/schedules/:name` | Admin-Key | Schedule + BullMQ-Scheduler entfernen |
 
-**Job-Typen**: `integrations.ping` (Smoke-Test), `media.extract-audio` (MP3, Legacy-Defaults 128k/22.05kHz), `media.thumbnail` (JPEG/PNG-Frame), `pinfinity.cleanup-published-images` (löscht Bilder längst veröffentlichter Pins aus Pinfinitys Supabase Storage; Payload `{ supabaseCredential, dryRun? }`). Registry: `src/jobs/`.
+**Job-Typen**: `integrations.ping` (Smoke-Test), `media.extract-audio` (MP3, Legacy-Defaults 128k/22.05kHz), `media.thumbnail` (JPEG/PNG-Frame), `pinfinity.cleanup-published-images` (löscht Bilder längst veröffentlichter Pins aus Pinfinitys Supabase Storage; Payload `{ supabaseCredential, dryRun? }`), `slack.post-message` (Text an einen Slack Incoming Webhook; Payload `{ slackCredential, text }`, Credential `{provider:"apikey", data:{webhookUrl}}`). Registry: `src/jobs/`.
+
+**Totmannschalter mit `slack.post-message`**: Nach jedem erfolgreichen Lauf `POST /jobs` mit fester `jobId`, `delay` (z.B. 26 h in ms) und `onExisting: "replace"` - das schiebt den Alarm nach hinten. Bleibt der nächste Erfolg aus, läuft der verzögerte Job los und meldet das Ausbleiben einmal. Fehler meldet der Consumer sofort mit einem zweiten Aufruf ohne `delay`.
 
 **Callbacks**: Worker POSTet nach completed/failed `{jobId, queue, type, status, tenant, result|error}` an die `callbackUrl` — HMAC-signiert im Header `X-MQ-Signature` (SHA-256 über den Raw-Body, Secret = `URL_SIGNING_SECRET`), 3 Versuche, nie Datei-Inhalte.
 
